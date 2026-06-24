@@ -1,0 +1,18 @@
+# data & models (privacy / IP / size) — never commit
+*.npz
+*.pt
+*.csv
+*.parquet
+cache/
+artifacts/
+
+# logs & machine outputs
+*.log
+*_log.txt
+reports/*.json
+
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
