@@ -216,6 +216,44 @@ def make_smoke_runs(n_subj=10, n_runs=2, seed=0, npts=2400):
             rid += 1
 
 
+# =========================================================================
+# Reinforcement-learning driving environment (surrogate kinematic sim)
+# =========================================================================
+RL_DT = 0.05              # sim time step (s)
+RL_V_MAX = 40.0           # m/s speed clip
+RL_A_MAX = 3.0            # m/s^2 accel authority (action scaled by this)
+RL_STEER_GAIN = 0.005     # steering[-1,1] -> commanded path curvature (1/m); ~2.5x max road curv
+RL_LOOKAHEAD = 5          # # of lookahead curvature points in observation
+RL_LOOKAHEAD_GRID = 5     # spacing (grid points) between lookahead samples
+RL_MARGIN = 0.4           # off-road if |offset| > lane_halfwidth + margin (m)
+RL_MAX_STEPS = 4000       # episode step cap
+# reward weights: r = -w_e*(e-e_ref)^2 -w_v*(v-v_ref)^2 -w_j*jerk^2 -w_a*acc^2 + alive
+RL_W_E, RL_W_V, RL_W_J, RL_W_A = 1.0, 0.05, 1e-3, 1e-2
+RL_ALIVE, RL_OFFROAD_PEN = 0.1, 10.0   # PEN: one-time on entering off-road
+RL_OFFROAD_STEP = 2.0                  # per-step penalty while clamped at boundary
+# NOTE: off-road does NOT terminate (no-escape env). Terminating would let the agent
+# escape a negative reward stream by deliberately crashing ("suicide exploit").
+
+
+def make_smoke_roads(n=8, seed=0):
+    """Synthetic road profiles + human ref for env self-test (list of dicts)."""
+    rng = np.random.RandomState(seed)
+    roads = []
+    for i in range(n):
+        M = 400 + int(200 * rng.rand())                 # ~0.8-1.2 km at dd=2m
+        s = np.arange(M)
+        curv = 0.004 * np.sin(np.linspace(0, 6 + 4 * rng.rand(), M)) + 0.0003 * rng.randn(M)
+        v_ref = np.clip(25 + 3 * rng.randn() + 1.5 * np.sin(np.linspace(0, 5, M)), 5, None)
+        e_ref = (0.1 + 0.2 * rng.rand()) * np.sin(np.linspace(0, 18, M) + rng.rand() * 6) + 60 * curv
+        roads.append(dict(curv=curv.astype("float32"),
+                          slope=(0.01 * np.sin(np.linspace(0, 3, M))).astype("float32"),
+                          lane_w=np.full(M, 3.0, "float32"),
+                          cw=np.full(M, 6.5, "float32"),
+                          e_ref=e_ref.astype("float32"), v_ref=v_ref.astype("float32"),
+                          subject=i % max(1, n // 2)))
+    return roads
+
+
 def build_smoke_dataset(out_path, geo_cols=None, dd=GEN_DD, W=GEN_W, stride=None, seed=0, n_subj=10):
     geo_cols = list(geo_cols) if geo_cols else list(GEN_GEO_CANDIDATES)
     Xg, Yb, ws, wr, wc = build_gen_dataset(

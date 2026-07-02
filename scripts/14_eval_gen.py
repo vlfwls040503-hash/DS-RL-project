@@ -31,7 +31,8 @@ FIG = os.path.join(REP, "figs"); os.makedirs(FIG, exist_ok=True)
 
 def load_ckpt(exp):
     ck = torch.load(os.path.join(ART, f"cvae_{exp}.pt"), map_location=DEV, weights_only=False)
-    m = CVAE(beh_dim=ck["beh_dim"], geo_dim=ck["geo_dim"], z_dim=ck["z_dim"])
+    m = CVAE(beh_dim=ck["beh_dim"], geo_dim=ck["geo_dim"], z_dim=ck["z_dim"],
+             stochastic=ck.get("stochastic", False), stoch_dim=ck.get("stoch_dim"))
     m.load_state_dict(ck["state"]); m.to(DEV).eval()
     return m, Scaler.from_dict(ck["geo_scaler"]), Scaler.from_dict(ck["beh_scaler"]), ck
 
@@ -69,7 +70,7 @@ def decode_samples(model, gs, bs, Xg_te, z_dim, chunk=512):
         for s in range(0, len(Xg_te), chunk):
             geo = torch.from_numpy(gs.transform(Xg_te[s:s + chunk])).to(DEV)
             z = torch.randn(geo.shape[0], z_dim, device=DEV)
-            rec = model.decode(z, geo).cpu().numpy()
+            rec = model.decode_sample(z, geo).cpu().numpy()
             out.append(bs.inverse(rec))
     return np.concatenate(out)
 

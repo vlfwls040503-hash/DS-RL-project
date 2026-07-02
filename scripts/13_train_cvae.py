@@ -38,6 +38,8 @@ def main():
     ap.add_argument("--z_dim", type=int, default=16)
     ap.add_argument("--beta", type=float, default=0.5)
     ap.add_argument("--kl_warmup", type=int, default=10)
+    ap.add_argument("--stochastic", action="store_true", help="per-step Gaussian decoder (NLL recon) -> restores SDLP")
+    ap.add_argument("--stoch_dim", type=int, default=-1, help="# leading behavior channels stochastic (offset,speed); -1=all, 1=offset only")
     ap.add_argument("--window", type=int, default=0)   # informational (data already windowed)
     ap.add_argument("--stride", type=int, default=0)
     ap.add_argument("--epochs", type=int, default=60)
@@ -60,7 +62,8 @@ def main():
     vl = DataLoader(TensorDataset(torch.from_numpy(Ys[va]), torch.from_numpy(Xs[va])),
                     batch_size=512, shuffle=False)
 
-    model = CVAE(beh_dim=2, geo_dim=G, z_dim=args.z_dim).to(DEV)
+    _sd = None if args.stoch_dim < 0 else args.stoch_dim
+    model = CVAE(beh_dim=2, geo_dim=G, z_dim=args.z_dim, stochastic=args.stochastic, stoch_dim=_sd).to(DEV)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     recon_fn = nn.SmoothL1Loss()
@@ -72,8 +75,8 @@ def main():
         for beh, geo in tl:
             beh, geo = beh.to(DEV), geo.to(DEV)
             opt.zero_grad()
-            recon, mu, logvar = model(beh, geo)
-            loss, rec, kl = cvae_loss(recon, beh, mu, logvar, beta_t, recon_fn)
+            rec_mu, rec_logstd, mu_z, logvar = model(beh, geo)
+            loss, rec, kl = cvae_loss(rec_mu, rec_logstd, beh, mu_z, logvar, beta_t, recon_fn)
             loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0); opt.step()
             tot += loss.item() * len(beh); rec_s += rec.item() * len(beh); kl_s += kl.item() * len(beh); n += len(beh)
         sch.step()
@@ -82,8 +85,8 @@ def main():
         with torch.no_grad():
             for beh, geo in vl:
                 beh, geo = beh.to(DEV), geo.to(DEV)
-                recon, mu, logvar = model(beh, geo)
-                loss, rec, kl = cvae_loss(recon, beh, mu, logvar, args.beta, recon_fn)
+                rec_mu, rec_logstd, mu_z, logvar = model(beh, geo)
+                loss, rec, kl = cvae_loss(rec_mu, rec_logstd, beh, mu_z, logvar, args.beta, recon_fn)
                 vtot += loss.item() * len(beh); vrec += rec.item() * len(beh); vkl += kl.item() * len(beh); vn += len(beh)
         hist.append(dict(epoch=ep, beta=beta_t, train=tot / n, train_recon=rec_s / n, train_kl=kl_s / n,
                          val=vtot / vn, val_recon=vrec / vn, val_kl=vkl / vn))
@@ -100,6 +103,7 @@ def main():
     final_kl = hist[-1]["val_kl"]
     collapse = final_kl < 0.05
     torch.save(dict(state=model.state_dict(), exp=exp, z_dim=args.z_dim, geo_dim=G, beh_dim=2,
+                    stochastic=args.stochastic, stoch_dim=model.stoch_dim,
                     feat_geo=feat_geo, geo_scaler=gs.to_dict(), beh_scaler=bs.to_dict(),
                     args=vars(args)), os.path.join(ART, f"cvae_{exp}.pt"))
     json.dump(dict(exp=exp, z_dim=args.z_dim, beta=args.beta, geo_dim=G, feat_geo=feat_geo,

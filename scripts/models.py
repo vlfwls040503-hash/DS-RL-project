@@ -65,16 +65,23 @@ class CVAE(nn.Module):
       q(z | behavior, geometry) : GRU encoder -> (mu_z, logvar_z)
       p(behavior | z, geometry) : GRU decoder (geometry fed every step + z broadcast)
     behavior=(B,W,2), geometry=(B,W,G). Seq2seq decode (no teacher forcing)."""
-    def __init__(self, beh_dim=2, geo_dim=5, z_dim=16, hidden=128, layers=2, p=0.1):
+    def __init__(self, beh_dim=2, geo_dim=5, z_dim=16, hidden=128, layers=2, p=0.1,
+                 stochastic=False, stoch_dim=None, logstd_min=-5.0, logstd_max=2.0):
         super().__init__()
         self.beh_dim, self.geo_dim, self.z_dim = beh_dim, geo_dim, z_dim
+        self.stochastic = stochastic
+        # stoch_dim = # of leading behavior channels (order: offset, speed) that are stochastic.
+        # e.g. stoch_dim=1 -> only offset noisy, speed deterministic (keeps kinematics smooth).
+        self.stoch_dim = (beh_dim if stoch_dim is None else int(stoch_dim)) if stochastic else 0
+        self.logstd_min, self.logstd_max = logstd_min, logstd_max
         self.enc_gru = nn.GRU(beh_dim + geo_dim, hidden, num_layers=layers,
                               batch_first=True, dropout=p if layers > 1 else 0.0)
         self.mu_z = nn.Linear(hidden, z_dim)
         self.logvar_z = nn.Linear(hidden, z_dim)
         self.dec_gru = nn.GRU(geo_dim + z_dim, hidden, num_layers=layers,
                               batch_first=True, dropout=p if layers > 1 else 0.0)
-        self.dec_out = nn.Sequential(nn.LayerNorm(hidden), nn.GELU(), nn.Linear(hidden, beh_dim))
+        self.dec_out = nn.Sequential(nn.LayerNorm(hidden), nn.GELU(),
+                                     nn.Linear(hidden, beh_dim + self.stoch_dim))
 
     def encode(self, behavior, geometry):
         out, _ = self.enc_gru(torch.cat([behavior, geometry], dim=-1))
@@ -86,20 +93,47 @@ class CVAE(nn.Module):
         std = torch.exp(0.5 * logvar)
         return mu + torch.randn_like(std) * std
 
-    def decode(self, z, geometry):
+    def decode_dist(self, z, geometry):
+        """Returns (mu[B,W,beh], logstd[B,W,stoch_dim]). logstd is None if deterministic."""
         W = geometry.shape[1]
         zb = z.unsqueeze(1).expand(-1, W, -1)              # (B,W,z)
         out, _ = self.dec_gru(torch.cat([geometry, zb], dim=-1))
-        return self.dec_out(out)                            # (B,W,beh)
+        o = self.dec_out(out)
+        mu = o[..., :self.beh_dim]
+        if self.stoch_dim > 0:
+            logstd = torch.clamp(o[..., self.beh_dim:], self.logstd_min, self.logstd_max)
+            return mu, logstd
+        return mu, None
+
+    def decode(self, z, geometry):                          # mean trajectory
+        mu, _ = self.decode_dist(z, geometry)
+        return mu
+
+    def decode_sample(self, z, geometry):                   # add noise to stochastic channels only
+        mu, logstd = self.decode_dist(z, geometry)
+        if logstd is None:
+            return mu
+        out = mu.clone()
+        sd = self.stoch_dim
+        out[..., :sd] = mu[..., :sd] + torch.exp(logstd) * torch.randn_like(logstd)
+        return out
 
     def forward(self, behavior, geometry):
-        mu, logvar = self.encode(behavior, geometry)
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z, geometry), mu, logvar
+        mu_z, logvar = self.encode(behavior, geometry)
+        z = self.reparameterize(mu_z, logvar)
+        rec_mu, rec_logstd = self.decode_dist(z, geometry)
+        return rec_mu, rec_logstd, mu_z, logvar
 
 
-def cvae_loss(recon, behavior, mu, logvar, beta, recon_fn):
-    """recon_fn: e.g. nn.SmoothL1Loss(). Returns (total, recon, kl) — kl in nats/sample."""
-    rec = recon_fn(recon, behavior)
-    kl = -0.5 * torch.mean(torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1))
+def cvae_loss(rec_mu, rec_logstd, behavior, mu_z, logvar, beta, recon_fn):
+    """recon: SmoothL1 (deterministic) or Gaussian NLL (stochastic, rec_logstd given).
+    Returns (total, recon, kl) — kl in nats/sample."""
+    if rec_logstd is None:
+        rec = recon_fn(rec_mu, behavior)
+    else:
+        sd = rec_logstd.shape[-1]                            # stochastic channels: Gaussian NLL
+        rec = gaussian_nll(rec_mu[..., :sd], rec_logstd, behavior[..., :sd])
+        if sd < behavior.shape[-1]:                          # remaining channels: SmoothL1
+            rec = rec + recon_fn(rec_mu[..., sd:], behavior[..., sd:])
+    kl = -0.5 * torch.mean(torch.sum(1 + logvar - mu_z.pow(2) - logvar.exp(), dim=1))
     return rec + beta * kl, rec, kl
