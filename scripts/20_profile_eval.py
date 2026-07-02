@@ -54,10 +54,13 @@ class HumanlikePolicy:
      Root cause was the injection POINT: human variability originates at intent level.)
     Longitudinal: PD speed controller on v_ref."""
     def __init__(self, model, e_tau=300.0, e_sigma=0.25, e_lpf=50.0, b_max=0.6,
+                 b_bias=0.0, v_scale=1.0,
                  steer_sigma=0.0, steer_db=0.0, k_v=1.0, seed=0):
         self.m = model
         self.e_tau, self.e_sigma, self.b_max = float(e_tau), float(e_sigma), float(b_max)
         self.e_lpf = float(e_lpf)      # 2nd stage: smooths the OU (OU is Brownian-rough;
+        self.b_bias = float(b_bias)    # driver trait: preferred lane offset (m)
+        self.v_scale = float(v_scale)  # driver trait: speed-preference ratio
         self.steer_sigma, self.steer_db, self.k_v = float(steer_sigma), float(steer_db), k_v
         self.rng = np.random.RandomState(seed)   # tracking a rough target forces steering
         self.b, self.bs, self.x, self.u = 0.0, 0.0, 0.0, None   # reversals -> SRR blow-up)
@@ -77,7 +80,7 @@ class HumanlikePolicy:
         else:
             self.bs = self.b
         o = obs.copy()
-        o[IDX_E] = o[IDX_E] - float(np.clip(self.bs, -self.b_max, self.b_max))
+        o[IDX_E] = o[IDX_E] - float(np.clip(self.bs + self.b_bias, -1.0, 1.0))
         tgt = float(self.m.predict(o, deterministic=True)[0][0])
         if self.steer_sigma > 1e-9:                # optional residual steering noise
             self.x += -self.x * dm / self.e_tau + self.steer_sigma * np.sqrt(2 * dm / self.e_tau) * self.rng.randn()
@@ -89,7 +92,7 @@ class HumanlikePolicy:
         else:
             steer = tgt
         i = min(int(env.s / env.dd), len(env.road["v_ref"]) - 1)
-        acc = float(np.clip(self.k_v * (env.road["v_ref"][i] - env.v) / RL_A_MAX, -1, 1))
+        acc = float(np.clip(self.k_v * (self.v_scale * env.road["v_ref"][i] - env.v) / RL_A_MAX, -1, 1))
         return np.array([np.clip(steer, -1, 1), acc], np.float32)
 
 
@@ -209,33 +212,29 @@ def main():
                 srrs.append(srr(sg["theta"], 0.5))
         return float(np.mean(stds)), float(np.nanmean(wls)), float(np.mean(srrs)), off
 
-    # step1: e_lpf(의도 평활 길이)를 SRR_0.5에 맞춤 — OU 거칠기 제거가 잔 교정의 핵심
-    #        (진단: 정책 단독 SRR 6.4 << 사람 11.9 << OU 직결 ~32)
-    tau_s = 300.0
-    lpf_best = None
-    for lpf in [20.0, 50.0, 100.0, 200.0]:
-        sd, wl, s5, off = probe(tau_s, t_std, lpf)
-        d = abs(s5 - t_srr) + (100.0 if off else 0.0)
-        print(f"  lpf={lpf:5.0f}m -> SRR0.5={s5:.1f}/km (목표 {t_srr:.1f}) std={sd:.3f} "
-              f"wl={wl:.0f} off={off}", flush=True)
-        if lpf_best is None or d < lpf_best[0]:
-            lpf_best = (d, lpf, sd)
-    _, lpf_s, sd_l = lpf_best
+    # JOINT 2D calibration over (e_tau, e_lpf) — 파장(wl)과 SRR을 동시에 맞춤.
+    # (v2.4 단일축 보정의 트레이드오프: lpf가 SRR을 내리면서 파장을 밀어올림 → 2D 탐색으로 균형)
+    # std는 sigma에 ~선형이므로 콤보당 1회 프로브 후 해석적 재스케일로 점수화(시간 절약).
+    best = None
+    for tau in [75.0, 150.0, 300.0]:
+        for lpf in [50.0, 100.0, 150.0]:
+            sd, wl, s5, off = probe(tau, t_std, lpf)
+            score = (abs(wl - t_wl) / t_wl + abs(s5 - t_srr) / t_srr
+                     + (100.0 if off else 0.0))
+            print(f"  tau={tau:4.0f} lpf={lpf:4.0f} -> wl={wl:.0f} SRR={s5:.1f} "
+                  f"std={sd:.3f} off={off} score={score:.3f}", flush=True)
+            if best is None or score < best[0]:
+                best = (score, tau, lpf, sd)
+    _, tau_s, lpf_s, sd_l = best
 
-    # step2: e_sigma를 e-std에 재스케일(평활로 진폭 감소 보상), 가드 확인
-    sig_s = float(np.clip(t_std * t_std / max(sd_l, 1e-6), 0.05, 1.0))
+    # sigma rescale to e-std + guarded verify
+    sig_s = float(np.clip(t_std * t_std / max(sd_l, 1e-6), 0.05, 1.2))
     sd_f, wl_f, s5_f, off_f = probe(tau_s, sig_s, lpf_s)
     if not (sd_f < 1.5 * t_std and off_f == 0):
         sig_s, (sd_f, wl_f, s5_f, off_f) = t_std, probe(tau_s, t_std, lpf_s)
-
-    # step3: e_tau 미세선택(파장) — lpf 고정 후 두 후보만
-    for tau in [150.0, 600.0]:
-        sd, wl, s5, off = probe(tau, sig_s, lpf_s)
-        if off == 0 and abs(wl - t_wl) < abs(wl_f - t_wl) and abs(s5 - t_srr) <= abs(s5_f - t_srr) * 1.3:
-            tau_s, sd_f, wl_f, s5_f = tau, sd, wl, s5
     db_s = 0.0
     print(f"calibrated: e_tau={tau_s:.0f}m e_sigma={sig_s:.3f}m e_lpf={lpf_s:.0f}m -> "
-          f"std={sd_f:.3f} wl={wl_f:.0f} SRR0.5={s5_f:.1f} (사람 {t_srr:.1f})", flush=True)
+          f"std={sd_f:.3f} wl={wl_f:.0f} SRR0.5={s5_f:.1f} (사람 wl={t_wl:.0f} SRR={t_srr:.1f})", flush=True)
 
     # ---- test rollouts ----
     env = DrivingEnv(test_roads, dd=dd, record=True)
