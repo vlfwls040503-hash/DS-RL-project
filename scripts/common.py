@@ -231,6 +231,9 @@ RL_MAX_STEPS = 4000       # episode step cap
 RL_W_E, RL_W_V, RL_W_J, RL_W_A = 1.0, 0.05, 1e-3, 1e-2
 # NOTE: w_v=0.5 destabilizes PPO (episode-reward scale explodes to ~-5e5 -> worse policy).
 # The ~3% speed undershoot is instead fixed by v_ref-bias CALIBRATION in 19_virtual_drivers.
+RL_W_DS = 0.0    # v4 시도① 기각: Δsteer² 페널티는 학습 중 탐사노이즈(σ~0.68)에 스텝당 ~18의
+                 # 세금을 물려 조향 동결→전도로 이탈. 탐사를 살리는 w(≤0.05)로는 평활효과 소멸
+                 # → env 보상 경로는 막다른 길. 올바른 v4: 행동을 조향'변화율'로 재정의(적분형) or GAIL.
 RL_ALIVE, RL_OFFROAD_PEN = 0.1, 10.0   # PEN: one-time on entering off-road
 RL_OFFROAD_STEP = 2.0                  # per-step penalty while clamped at boundary
 # NOTE: off-road does NOT terminate (no-escape env). Terminating would let the agent

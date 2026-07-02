@@ -17,7 +17,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from common import (GEN_DD, RL_DT, RL_V_MAX, RL_A_MAX, RL_STEER_GAIN, RL_LOOKAHEAD,
                     RL_LOOKAHEAD_GRID, RL_MARGIN, RL_MAX_STEPS,
-                    RL_W_E, RL_W_V, RL_W_J, RL_W_A, RL_ALIVE, RL_OFFROAD_PEN,
+                    RL_W_E, RL_W_V, RL_W_J, RL_W_A, RL_W_DS, RL_ALIVE, RL_OFFROAD_PEN,
                     RL_OFFROAD_STEP, make_smoke_roads)
 
 OBS_DIM = 6 + RL_LOOKAHEAD   # [v, v_ref, e, psi, lane_halfwidth, slope] + lookahead curvatures
@@ -81,6 +81,7 @@ class DrivingEnv(gym.Env):
             # collapsed, speed tracking broke) -> reverted. Proper fix: multi-speed-regime
             # training data (e.g. merge), not augmentation. vref_scale stays 1.0.
         self.prev_a = 0.0
+        self.prev_steer = 0.0
         self.steps = 0
         self.was_offroad = False
         self.traj = []
@@ -106,8 +107,10 @@ class DrivingEnv(gym.Env):
         e_ref = float(r["e_ref"][i]); v_ref = float(r["v_ref"][i]) * self.vref_scale
         jerk = (a - self.prev_a) / RL_DT
         rew = (-RL_W_E * (self.e - e_ref) ** 2 - RL_W_V * (self.v - v_ref) ** 2
-               - RL_W_J * jerk ** 2 - RL_W_A * a ** 2 + RL_ALIVE)
+               - RL_W_J * jerk ** 2 - RL_W_A * a ** 2
+               - RL_W_DS * (steer - self.prev_steer) ** 2 + RL_ALIVE)
         self.prev_a = a
+        self.prev_steer = steer
 
         half = float(r["lane_w"][i]) / 2.0
         bound = half + RL_MARGIN
