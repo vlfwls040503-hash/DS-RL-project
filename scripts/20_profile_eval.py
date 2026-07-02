@@ -66,8 +66,9 @@ class HumanlikePolicy:
         self.b, self.bs, self.x, self.u = 0.0, 0.0, 0.0, None   # reversals -> SRR blow-up)
 
     def reset(self):
-        self.b = float(np.clip(self.rng.randn() * self.e_sigma, -self.b_max, self.b_max))
-        self.bs = self.b
+        # b starts at 0: a random initial intent-bias vs the car's actual start position
+        # caused a large convergence transient (~0.9 m spike in the first 100 m).
+        self.b, self.bs = 0.0, 0.0
         self.x = self.rng.randn() * self.steer_sigma
         self.u = None
 
