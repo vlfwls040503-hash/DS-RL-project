@@ -25,13 +25,13 @@ OBS_DIM = 6 + RL_LOOKAHEAD   # [v, v_ref, e, psi, lane_halfwidth, slope] + looka
 #       e_ref stays HIDDEN: lateral behavior must be inferred from geometry.
 
 
-def build_obs(road, i, v, e, psi):
+def build_obs(road, i, v, e, psi, vref_scale=1.0):
     """Shared observation builder (env + expert-dataset use the SAME formula)."""
     M = len(road["curv"])
     i = min(max(i, 0), M - 1)
     idx = np.clip(i + RL_LOOKAHEAD_GRID * np.arange(1, RL_LOOKAHEAD + 1), 0, M - 1)
     return np.concatenate([
-        [v / 30.0, road["v_ref"][i] / 30.0, e, psi * 5.0,
+        [v / 30.0, road["v_ref"][i] * vref_scale / 30.0, e, psi * 5.0,
          road["lane_w"][i] / 2.0, road["slope"][i] * 20.0],
         road["curv"][idx] * 200.0,
     ]).astype(np.float32)
@@ -71,15 +71,20 @@ class DrivingEnv(gym.Env):
         self.e = float(self.road["e_ref"][i0])
         self.v = float(max(self.road["v_ref"][i0], 0.1))
         self.psi = 0.0
+        self.vref_scale = 1.0
         if self.random_start:      # state randomization -> policy learns recovery (robustness)
             self.e += float(self._rng.uniform(-0.15, 0.15))
             self.v = float(np.clip(self.v * self._rng.uniform(0.7, 1.25), 0.5, RL_V_MAX))
             self.psi = float(self._rng.uniform(-0.01, 0.01))
+            # NOTE: v_ref-scale augmentation was tried here (U(0.85,1.15)) to make the policy
+            # obey the v_ref channel, but it destabilized the equilibrium (lateral noise curve
+            # collapsed, speed tracking broke) -> reverted. Proper fix: multi-speed-regime
+            # training data (e.g. merge), not augmentation. vref_scale stays 1.0.
         self.prev_a = 0.0
         self.steps = 0
         self.was_offroad = False
         self.traj = []
-        return build_obs(self.road, i0, self.v, self.e, self.psi), {}
+        return build_obs(self.road, i0, self.v, self.e, self.psi, self.vref_scale), {}
 
     # ----------------------------------------------------------------- step
     def step(self, action):
@@ -98,7 +103,7 @@ class DrivingEnv(gym.Env):
         self.s += self.v * np.cos(self.psi) * RL_DT
         self.steps += 1
 
-        e_ref = float(r["e_ref"][i]); v_ref = float(r["v_ref"][i])
+        e_ref = float(r["e_ref"][i]); v_ref = float(r["v_ref"][i]) * self.vref_scale
         jerk = (a - self.prev_a) / RL_DT
         rew = (-RL_W_E * (self.e - e_ref) ** 2 - RL_W_V * (self.v - v_ref) ** 2
                - RL_W_J * jerk ** 2 - RL_W_A * a ** 2 + RL_ALIVE)
@@ -119,7 +124,7 @@ class DrivingEnv(gym.Env):
         if self.record:
             self.traj.append((self.s, self.e, self.v, a))
         i2 = min(int(self.s / self.dd), M - 1)
-        obs = build_obs(r, i2, self.v, self.e, self.psi)
+        obs = build_obs(r, i2, self.v, self.e, self.psi, self.vref_scale)
         return obs, float(rew), terminated, truncated, dict(e_ref=e_ref, v_ref=v_ref, offroad=offroad)
 
 

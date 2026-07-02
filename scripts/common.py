@@ -229,6 +229,8 @@ RL_MARGIN = 0.4           # off-road if |offset| > lane_halfwidth + margin (m)
 RL_MAX_STEPS = 4000       # episode step cap
 # reward weights: r = -w_e*(e-e_ref)^2 -w_v*(v-v_ref)^2 -w_j*jerk^2 -w_a*acc^2 + alive
 RL_W_E, RL_W_V, RL_W_J, RL_W_A = 1.0, 0.05, 1e-3, 1e-2
+# NOTE: w_v=0.5 destabilizes PPO (episode-reward scale explodes to ~-5e5 -> worse policy).
+# The ~3% speed undershoot is instead fixed by v_ref-bias CALIBRATION in 19_virtual_drivers.
 RL_ALIVE, RL_OFFROAD_PEN = 0.1, 10.0   # PEN: one-time on entering off-road
 RL_OFFROAD_STEP = 2.0                  # per-step penalty while clamped at boundary
 # NOTE: off-road does NOT terminate (no-escape env). Terminating would let the agent

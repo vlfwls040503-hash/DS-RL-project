@@ -84,6 +84,21 @@ def main():
     def sdlp_to_alpha(s):
         return float(np.clip(np.interp(s, curve, alphas), alphas[0], alphas[-1]))
 
+    # ---- speed-bias calibration (val): measured under the SAME stochastic conditions as
+    #      the population run (steering noise makes the accel head brake slightly on average;
+    #      a deterministic measurement misses this ~4% bias). ----
+    set_temp(1.0)
+    env_v = DrivingEnv(val_roads, dd=dd, record=True)
+    ratios = []
+    for k in range(len(val_roads)):
+        traj, _ = rollout(env_v, lambda o, e: model.predict(o, deterministic=False)[0], k)
+        if len(traj) > 10:
+            grid_v = np.arange(len(val_roads[k]["v_ref"])) * dd
+            vref_i = np.interp(traj[:, 0], grid_v, val_roads[k]["v_ref"])
+            ratios.append(float(traj[:, 2].mean() / vref_i.mean()))
+    v_bias = float(np.mean(ratios)) if ratios else 1.0
+    print(f"speed-bias r={v_bias:.3f}  (gamma corrected by 1/r)", flush=True)
+
     # ---- trait pool (joint bootstrap, condition-matched) ----
     pool = road_traits(fit_roads)
     v_pop = float(np.mean([t["v"] for t in pool]))
@@ -99,7 +114,7 @@ def main():
         cand = by_cond.get(int(road.get("cond", 0)), pool)
         for j in range(args.per_road):
             t = cand[rng.randint(len(cand))]                  # joint (sdlp,lpm,v) sample
-            alpha_i, b_i, gam_i = sdlp_to_alpha(t["sdlp"]), t["lpm"], t["v"] / v_pop
+            alpha_i, b_i, gam_i = sdlp_to_alpha(t["sdlp"]), t["lpm"], t["v"] / v_pop / v_bias
             set_temp(alpha_i)
 
             def policy(obs, e, b=b_i, g=gam_i):
@@ -146,7 +161,7 @@ def main():
     for j in range(3):
         t = cand[rng.randint(len(cand))]
         set_temp(sdlp_to_alpha(t["sdlp"]))
-        b_i, g_i = t["lpm"], t["v"] / v_pop
+        b_i, g_i = t["lpm"], t["v"] / v_pop / v_bias
         traj, _ = rollout(env, lambda o, e, b=b_i, g=g_i:
                           model.predict(_mod(o, b, g), deterministic=False)[0], k0)
         ax.plot(traj[:, 0], traj[:, 1], color=cols[j], lw=1.0, alpha=.9,
@@ -174,6 +189,8 @@ def main():
           f"![합성 운전자 예시](figs/fig_vd_drivers_{exp}.png)\n",
           "- 특성 3종을 *같은 도로에서 결합 샘플* → 특성 간 상관 보존. 조건별 샘플링으로 지상/지하 "
           "SDLP 차이는 **보정으로 재현**(창발 아님 — god's-eye 입력의 한계를 명시).",
+          f"- 에이전트의 속도 저추종(비율 r={v_bias:.3f}, val에서 측정)을 γ/r로 보정 — "
+          "보상가중치 수술(w_v↑)은 PPO 보상스케일 폭주로 역효과였음(α 보정과 동일 철학의 해법).",
           "- 이것이 '합성 피실험자' v1: 통계적 검정력 보강·설계안 사전평가용 가상 모집단.\n"]
     open(os.path.join(REP, "report_rl.md"), "a", encoding="utf-8").write("\n".join(L))
     print("appended section 5 -> report_rl.md ; figs + virtual_drivers json written", flush=True)
