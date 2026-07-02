@@ -121,8 +121,8 @@ class DrivingEnv(gym.Env):
         self.was_offroad = offroad
         terminated = False
         truncated = bool(self.s >= (M - 1) * self.dd or self.steps >= RL_MAX_STEPS)
-        if self.record:
-            self.traj.append((self.s, self.e, self.v, a))
+        if self.record:   # (s, e, v, a, psi, steer) — psi/steer feed the multi-signal profile eval
+            self.traj.append((self.s, self.e, self.v, a, self.psi, steer))
         i2 = min(int(self.s / self.dd), M - 1)
         obs = build_obs(r, i2, self.v, self.e, self.psi, self.vref_scale)
         return obs, float(rew), terminated, truncated, dict(e_ref=e_ref, v_ref=v_ref, offroad=offroad)
