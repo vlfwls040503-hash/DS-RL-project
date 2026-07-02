@@ -18,23 +18,24 @@ from gymnasium import spaces
 from common import (GEN_DD, RL_DT, RL_V_MAX, RL_A_MAX, RL_STEER_GAIN, RL_LOOKAHEAD,
                     RL_LOOKAHEAD_GRID, RL_MARGIN, RL_MAX_STEPS,
                     RL_W_E, RL_W_V, RL_W_J, RL_W_A, RL_W_DS, RL_ALIVE, RL_OFFROAD_PEN,
-                    RL_OFFROAD_STEP, make_smoke_roads)
+                    RL_OFFROAD_STEP, RL_RATE_ACTION, RL_SRATE_MAX, make_smoke_roads)
 
-OBS_DIM = 6 + RL_LOOKAHEAD   # [v, v_ref, e, psi, lane_halfwidth, slope] + lookahead curvatures
+# obs: [v, v_ref, e, psi, lane_halfwidth, slope] + lookahead curv + (rate mode) current steer
+OBS_DIM = 6 + RL_LOOKAHEAD + (1 if RL_RATE_ACTION else 0)
 # NOTE: v_ref (speed intent) IS observed — a real driver knows the target speed.
 #       e_ref stays HIDDEN: lateral behavior must be inferred from geometry.
+#       v4b rate mode: current steering appended (integrator state must be observable).
 
 
-def build_obs(road, i, v, e, psi, vref_scale=1.0):
+def build_obs(road, i, v, e, psi, vref_scale=1.0, steer=0.0):
     """Shared observation builder (env + expert-dataset use the SAME formula)."""
     M = len(road["curv"])
     i = min(max(i, 0), M - 1)
+    base = [v / 30.0, road["v_ref"][i] * vref_scale / 30.0, e, psi * 5.0,
+            road["lane_w"][i] / 2.0, road["slope"][i] * 20.0]
     idx = np.clip(i + RL_LOOKAHEAD_GRID * np.arange(1, RL_LOOKAHEAD + 1), 0, M - 1)
-    return np.concatenate([
-        [v / 30.0, road["v_ref"][i] * vref_scale / 30.0, e, psi * 5.0,
-         road["lane_w"][i] / 2.0, road["slope"][i] * 20.0],
-        road["curv"][idx] * 200.0,
-    ]).astype(np.float32)
+    tail = [steer] if RL_RATE_ACTION else []
+    return np.concatenate([base, road["curv"][idx] * 200.0, tail]).astype(np.float32)
 
 
 class DrivingEnv(gym.Env):
@@ -82,14 +83,23 @@ class DrivingEnv(gym.Env):
             # training data (e.g. merge), not augmentation. vref_scale stays 1.0.
         self.prev_a = 0.0
         self.prev_steer = 0.0
+        # v4b integrator state: start matched to road curvature (no initial transient)
+        self.steer_state = float(np.clip(self.road["curv"][i0] / RL_STEER_GAIN, -1.0, 1.0))
         self.steps = 0
         self.was_offroad = False
         self.traj = []
-        return build_obs(self.road, i0, self.v, self.e, self.psi, self.vref_scale), {}
+        return build_obs(self.road, i0, self.v, self.e, self.psi, self.vref_scale,
+                         self.steer_state), {}
 
     # ----------------------------------------------------------------- step
     def step(self, action):
-        steer = float(np.clip(action[0], -1.0, 1.0))
+        if RL_RATE_ACTION:            # v4b: action[0] = steering RATE; env integrates
+            rate = float(np.clip(action[0], -1.0, 1.0))
+            self.steer_state = float(np.clip(self.steer_state + rate * RL_SRATE_MAX * RL_DT,
+                                             -1.0, 1.0))
+            steer = self.steer_state
+        else:
+            steer = float(np.clip(action[0], -1.0, 1.0))
         a = float(np.clip(action[1], -1.0, 1.0)) * RL_A_MAX
         kappa_cmd = steer * RL_STEER_GAIN
         r = self.road
@@ -127,7 +137,8 @@ class DrivingEnv(gym.Env):
         if self.record:   # (s, e, v, a, psi, steer) — psi/steer feed the multi-signal profile eval
             self.traj.append((self.s, self.e, self.v, a, self.psi, steer))
         i2 = min(int(self.s / self.dd), M - 1)
-        obs = build_obs(r, i2, self.v, self.e, self.psi, self.vref_scale)
+        obs = build_obs(r, i2, self.v, self.e, self.psi, self.vref_scale,
+                        self.steer_state if RL_RATE_ACTION else steer)
         return obs, float(rew), terminated, truncated, dict(e_ref=e_ref, v_ref=v_ref, offroad=offroad)
 
 
@@ -184,9 +195,13 @@ def pd_action(env, k_e=0.10, psi_max=0.12, k_psi=0.6, k_v=1.0, preview=4):
     kr = float(r["curv"][i])
     psi_des = float(np.clip(k_e * (e_ref - env.e), -psi_max, psi_max))
     kappa_cmd = kr + k_psi * (psi_des - env.psi)
-    steer = float(np.clip(kappa_cmd / RL_STEER_GAIN, -1.0, 1.0))
+    steer_tgt = float(np.clip(kappa_cmd / RL_STEER_GAIN, -1.0, 1.0))
+    if RL_RATE_ACTION:                 # convert target angle into a rate command
+        cmd = float(np.clip((steer_tgt - env.steer_state) / (RL_SRATE_MAX * RL_DT), -1.0, 1.0))
+    else:
+        cmd = steer_tgt
     acc = float(np.clip(k_v * (v_ref - env.v) / RL_A_MAX, -1.0, 1.0))
-    return np.array([steer, acc], np.float32)
+    return np.array([cmd, acc], np.float32)
 
 
 def rollout(env, policy_fn, road_idx):
@@ -221,9 +236,15 @@ def make_expert_dataset(roads, dd=GEN_DD):
         a_h = v * np.gradient(v, dd)
         steer_h = np.clip(kappa_h / RL_STEER_GAIN, -1, 1)
         acc_h = np.clip(a_h / RL_A_MAX, -1, 1)
+        if RL_RATE_ACTION:
+            rate_h = np.clip(np.gradient(steer_h, dd) * v / RL_SRATE_MAX, -1, 1)
         for i in range(0, len(e), 2):
-            X.append(build_obs(r, i, v[i], e[i], psi_h[i]))
-            Y.append([steer_h[i], acc_h[i]])
+            if RL_RATE_ACTION:
+                X.append(build_obs(r, i, v[i], e[i], psi_h[i], steer=steer_h[i]))
+                Y.append([rate_h[i], acc_h[i]])
+            else:
+                X.append(build_obs(r, i, v[i], e[i], psi_h[i]))
+                Y.append([steer_h[i], acc_h[i]])
     return np.asarray(X, np.float32), np.asarray(Y, np.float32)
 
 

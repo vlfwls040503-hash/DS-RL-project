@@ -234,6 +234,11 @@ RL_W_E, RL_W_V, RL_W_J, RL_W_A = 1.0, 0.05, 1e-3, 1e-2
 RL_W_DS = 0.0    # v4 시도① 기각: Δsteer² 페널티는 학습 중 탐사노이즈(σ~0.68)에 스텝당 ~18의
                  # 세금을 물려 조향 동결→전도로 이탈. 탐사를 살리는 w(≤0.05)로는 평활효과 소멸
                  # → env 보상 경로는 막다른 길. 올바른 v4: 행동을 조향'변화율'로 재정의(적분형) or GAIL.
+# v4b(적분형 행동) 시도② 기각: rate action은 초기 조향 통제가 느려 PPO가 '정지'
+# 국소최적으로 붕괴(v=0, 보상 -4만→-16만 악화; 거대 음수리턴이 가치학습 불안정화).
+# 처방 특정됨: 리턴 정규화(VecNormalize)+커리큘럼 = 별도 인프라 작업(v4c).
+RL_RATE_ACTION = False  # v4c까지 기각 — 챔피언(v3.1)은 절대각 정책. 상세는 report §12
+RL_SRATE_MAX = 2.0     # max |d steer/dt| in steer-units/s (~24 deg/s wheel at ratio 15)
 RL_ALIVE, RL_OFFROAD_PEN = 0.1, 10.0   # PEN: one-time on entering off-road
 RL_OFFROAD_STEP = 2.0                  # per-step penalty while clamped at boundary
 # NOTE: off-road does NOT terminate (no-escape env). Terminating would let the agent

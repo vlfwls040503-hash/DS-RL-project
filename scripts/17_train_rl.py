@@ -13,6 +13,7 @@ import os, json, time, argparse
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from common import ART, REP, CACHE, gen_split
 from driving_env import DrivingEnv, load_roads, rollout, trim_roads
@@ -38,7 +39,11 @@ def main():
     print(f"[{exp}] roads train={len(train_roads)} val={len(val_roads)} test={int(te.sum())} "
           f"(subjects total {len(set(subject.tolist()))})", flush=True)
 
-    env = Monitor(DrivingEnv(train_roads, dd=dd, random_start=True, seed=args.seed))
+    mon = Monitor(DrivingEnv(train_roads, dd=dd, random_start=True, seed=args.seed))
+    # v4c: reward/return normalization (norm_obs=False — obs는 이미 수동 정규화;
+    # 보상 정규화는 학습에만 작용하므로 eval 스크립트들의 predict 경로는 무변경)
+    env = VecNormalize(DummyVecEnv([lambda: mon]), norm_obs=False, norm_reward=True,
+                       gamma=0.995)
     model = PPO("MlpPolicy", env, device="cpu", seed=args.seed, verbose=0,
                 n_steps=2048, batch_size=256, learning_rate=3e-4, gamma=0.995,
                 gae_lambda=0.95, ent_coef=1e-3,
@@ -57,7 +62,7 @@ def main():
         offs += int(off)
         if len(traj):
             sdlps.append(float(traj[:, 1].std()))
-    ep = env.get_episode_rewards()
+    ep = mon.get_episode_rewards()          # raw (unnormalized) episode rewards from Monitor
     rep = dict(exp=exp, timesteps=args.timesteps, seconds=dt,
                n_train_roads=len(train_roads), n_val_roads=len(ev.roads),
                train_ep_reward_first10=float(np.mean(ep[:10])) if len(ep) >= 10 else None,
