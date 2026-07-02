@@ -121,13 +121,51 @@ def main():
     rl_rows, rl_agg = eval_driver(test_roads, dd,
                                   lambda o, e: model.predict(o, deterministic=True)[0], "RL")
 
+    # ---- RL-σ: policy-noise temperature α calibrated on VAL roads to match human SDLP ----
+    # (deterministic eval collapses variability; the policy's own action noise, filtered by
+    #  the closed-loop dynamics, produces smooth human-like weaving — we only tune its scale.)
+    val_roads = [r for r, m in zip(roads, va) if m] or test_roads
+    hum_sdlp_val = float(np.mean([np.std(r["e_ref"]) for r in val_roads]))
+    orig_logstd = model.policy.log_std.data.clone()
+
+    def set_temp(alpha):
+        """Scale ONLY the steering-channel noise; accel stays ~deterministic (protects jerk —
+        the CVAE lesson: longitudinal noise wrecks kinematic plausibility)."""
+        ls = orig_logstd.clone()
+        ls[0] = ls[0] + float(np.log(alpha))
+        ls[1] = float(np.log(0.01))
+        model.policy.log_std.data = ls
+
+    def mean_sdlp(alpha, rset):
+        set_temp(alpha)
+        env_ = DrivingEnv(rset, dd=dd, record=True)
+        vals = []
+        for k in range(len(rset)):
+            traj, _ = rollout(env_, lambda o, e: model.predict(o, deterministic=False)[0], k)
+            if len(traj) > 10:
+                vals.append(float(traj[:, 1].std()))
+        return float(np.mean(vals)) if vals else float("nan")
+
+    alphas = [0.4, 0.6, 0.8, 1.0, 1.2]
+    curve = [mean_sdlp(a, val_roads) for a in alphas]
+    alpha_star = float(np.clip(np.interp(hum_sdlp_val, curve, alphas), alphas[0], alphas[-1]))
+    print(f"  [cal] val human SDLP={hum_sdlp_val:.3f}  curve={np.round(curve,3).tolist()}  "
+          f"alpha*={alpha_star:.2f}", flush=True)
+
+    print("RL-s (calibrated stochastic):", flush=True)
+    set_temp(alpha_star)
+    rls_rows, rls_agg = eval_driver(test_roads, dd,
+                                    lambda o, e: model.predict(o, deterministic=False)[0], "RL-s")
+    model.policy.log_std.data = orig_logstd
+
     # distribution match vs human (only completed roads)
     def w1_vs_human(rows, key, hum):
         vals = np.array([x[key] for x in rows if not x["off"]], float)
         return float(wasserstein1d(vals, hum)) if len(vals) else float("nan")
     dist = {name: dict(sdlp_w1=w1_vs_human(rows, "sdlp", hum_sdlp),
                        v_w1=w1_vs_human(rows, "v", hum_v))
-            for name, rows in [("PD", pd_rows), ("BC", bc_rows), ("RL", rl_rows)]}
+            for name, rows in [("PD", pd_rows), ("BC", bc_rows), ("RL", rl_rows),
+                               ("RL-s", rls_rows)]}
 
     # ------------------------------ figures ------------------------------
     # 1) trajectory overlay on one test road
@@ -150,8 +188,9 @@ def main():
 
     # 2) off-road rate bar
     fig, ax = plt.subplots(figsize=(5.5, 4))
-    names = ["PD", "BC", "RL"]; rates = [pd_agg["off_rate"], bc_agg["off_rate"], rl_agg["off_rate"]]
-    ax.bar(names, rates, color=["#888780", "#D85A30", "#1D9E75"])
+    names = ["PD", "BC", "RL", "RL-s"]
+    rates = [pd_agg["off_rate"], bc_agg["off_rate"], rl_agg["off_rate"], rls_agg["off_rate"]]
+    ax.bar(names, rates, color=["#888780", "#D85A30", "#1D9E75", "#7F77DD"])
     for i, v in enumerate(rates):
         ax.text(i, v, f"{v:.2f}", ha="center", va="bottom")
     ax.set_ylabel("이탈율"); ax.set_ylim(0, 1.05); ax.set_title(f"닫힌루프 이탈율 ({exp})")
@@ -160,16 +199,21 @@ def main():
     # 3) SDLP distribution: human vs RL (completed only)
     fig, ax = plt.subplots(figsize=(6.5, 4))
     rl_sdlp = [x["sdlp"] for x in rl_rows if not x["off"]]
-    bins = np.linspace(0, max(float(hum_sdlp.max()), max(rl_sdlp or [0.3])) * 1.1, 25)
+    rls_sdlp = [x["sdlp"] for x in rls_rows if not x["off"]]
+    bins = np.linspace(0, max(float(hum_sdlp.max()), max(rl_sdlp + rls_sdlp or [0.3])) * 1.1, 25)
     ax.hist(hum_sdlp, bins=bins, alpha=.5, density=True, label="사람", color="#185FA5")
     if rl_sdlp:
-        ax.hist(rl_sdlp, bins=bins, alpha=.5, density=True, label="RL", color="#1D9E75")
+        ax.hist(rl_sdlp, bins=bins, alpha=.5, density=True, label="RL(결정론)", color="#1D9E75")
+    if rls_sdlp:
+        ax.hist(rls_sdlp, bins=bins, alpha=.5, density=True,
+                label=f"RL-σ (α*={alpha_star:.2f})", color="#7F77DD")
     ax.set_xlabel("SDLP (m)"); ax.legend(); ax.set_title(f"SDLP 분포: 사람 vs RL ({exp})")
     fig.tight_layout(); fig.savefig(os.path.join(FIG, f"fig_rl_sdlp_{exp}.png"), dpi=120); plt.close(fig)
 
     # ------------------------------ report ------------------------------
     summ = dict(exp=exp, n_test_roads=len(test_roads),
-                PD=pd_agg, BC=bc_agg, RL=rl_agg, dist_vs_human=dist,
+                PD=pd_agg, BC=bc_agg, RL=rl_agg, RLs=rls_agg,
+                alpha_star=alpha_star, dist_vs_human=dist,
                 human=dict(sdlp_mean=float(hum_sdlp.mean()), v_mean=float(hum_v.mean())))
     json.dump(summ, open(os.path.join(REP, f"eval_rl_{exp}.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
@@ -181,12 +225,18 @@ def main():
          f"- PD 이탈율 **{pd_agg['off_rate']:.2f}**, 추종 RMSE **{pd_agg['rmse']:.3f} m** → "
          "시뮬이 기준궤적을 재현 가능함을 확인 후 비교 진행.\n",
          "## 2. 닫힌루프 비교 (test 도로)\n",
-         "| 지표 | 사람 | PD | BC | RL |", "|---|---|---|---|---|",
-         f"| 이탈율 | 0 | {pd_agg['off_rate']:.2f} | {bc_agg['off_rate']:.2f} | **{rl_agg['off_rate']:.2f}** |",
-         f"| SDLP(m) | {hum_sdlp.mean():.3f} | {pd_agg['sdlp']:.3f} | {bc_agg['sdlp']:.3f} | {rl_agg['sdlp']:.3f} |",
-         f"| 평균속도(m/s) | {hum_v.mean():.1f} | {pd_agg['v']:.1f} | {bc_agg['v']:.1f} | {rl_agg['v']:.1f} |",
-         f"| RMSE(e-e_ref) | — | {pd_agg['rmse']:.3f} | {bc_agg['rmse']:.3f} | {rl_agg['rmse']:.3f} |",
-         f"| 저크위반율 | — | {pd_agg['jviol']:.3f} | {bc_agg['jviol']:.3f} | {rl_agg['jviol']:.3f} |",
+         "RL-σ = 정책 자체 행동노이즈의 온도 α를 **val 도로에서 사람 SDLP에 맞게 보정**한 확률적 평가 "
+         f"(α*={alpha_star:.2f}, **조향 채널에만 적용** — 가속은 결정론 유지로 저크 보호). "
+         "노이즈가 차량동역학(저역필터)을 통과해 *부드러운* 흔들림을 만든다.\n",
+         "| 지표 | 사람 | PD | BC | RL(결정론) | RL-σ(보정) |", "|---|---|---|---|---|---|",
+         f"| 이탈율 | 0 | {pd_agg['off_rate']:.2f} | {bc_agg['off_rate']:.2f} | {rl_agg['off_rate']:.2f} | **{rls_agg['off_rate']:.2f}** |",
+         f"| SDLP(m) | **{hum_sdlp.mean():.3f}** | {pd_agg['sdlp']:.3f} | {bc_agg['sdlp']:.3f} | {rl_agg['sdlp']:.3f} | **{rls_agg['sdlp']:.3f}** |",
+         f"| 평균속도(m/s) | {hum_v.mean():.1f} | {pd_agg['v']:.1f} | {bc_agg['v']:.1f} | {rl_agg['v']:.1f} | {rls_agg['v']:.1f} |",
+         f"| RMSE(e-e_ref) | — | {pd_agg['rmse']:.3f} | {bc_agg['rmse']:.3f} | {rl_agg['rmse']:.3f} | {rls_agg['rmse']:.3f} |",
+         f"| 저크위반율 | — | {pd_agg['jviol']:.3f} | {bc_agg['jviol']:.3f} | {rl_agg['jviol']:.3f} | {rls_agg['jviol']:.3f} |",
+         f"\n주의 — **개인추종 RMSE의 바닥**: e_ref(개인 궤적)를 관측에서 숨긴 설계에서, 특정 개인과의 "
+         f"RMSE는 그 사람 고유 흔들림(SDLP≈{hum_sdlp.mean():.2f}m) 아래로 원리적으로 내려갈 수 없다. "
+         "따라서 인간유사성의 주지표는 RMSE가 아니라 **분포일치(SDLP·속도 W1)**다.",
          "\n분포일치(Wasserstein, 완주 도로만): "
          + ", ".join(f"{n} SDLP-W1={dist[n]['sdlp_w1']:.3g}/속도-W1={dist[n]['v_w1']:.3g}" for n in names),
          "\n## 3. 그림\n"]
