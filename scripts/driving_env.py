@@ -42,11 +42,15 @@ class DrivingEnv(gym.Env):
     """Kinematic lane-frame driving env over a set of recorded roads."""
     metadata = {"render_modes": []}
 
-    def __init__(self, roads, dd=GEN_DD, record=False, random_start=False, seed=0):
+    def __init__(self, roads, dd=GEN_DD, record=False, random_start=False, seed=0,
+                 gail_safety_only=False):
         super().__init__()
         assert len(roads) > 0
         self.roads, self.dd = roads, float(dd)
         self.record, self.random_start = record, random_start
+        # GAIL mode: env returns ONLY safety terms (off-road penalties); the imitation
+        # reward is added by the GAIL wrapper (discriminator). Tracking terms removed.
+        self.gail_safety_only = gail_safety_only
         self.action_space = spaces.Box(-1.0, 1.0, (2,), np.float32)
         self.observation_space = spaces.Box(-np.inf, np.inf, (OBS_DIM,), np.float32)
         self._rng = np.random.RandomState(seed)
@@ -116,9 +120,12 @@ class DrivingEnv(gym.Env):
 
         e_ref = float(r["e_ref"][i]); v_ref = float(r["v_ref"][i]) * self.vref_scale
         jerk = (a - self.prev_a) / RL_DT
-        rew = (-RL_W_E * (self.e - e_ref) ** 2 - RL_W_V * (self.v - v_ref) ** 2
-               - RL_W_J * jerk ** 2 - RL_W_A * a ** 2
-               - RL_W_DS * (steer - self.prev_steer) ** 2 + RL_ALIVE)
+        if self.gail_safety_only:
+            rew = 0.0                      # imitation reward comes from the GAIL wrapper
+        else:
+            rew = (-RL_W_E * (self.e - e_ref) ** 2 - RL_W_V * (self.v - v_ref) ** 2
+                   - RL_W_J * jerk ** 2 - RL_W_A * a ** 2
+                   - RL_W_DS * (steer - self.prev_steer) ** 2 + RL_ALIVE)
         self.prev_a = a
         self.prev_steer = steer
 
