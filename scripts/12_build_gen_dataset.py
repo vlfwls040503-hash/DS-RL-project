@@ -66,12 +66,39 @@ def runs_merge(geo_cols):
             rid += 1
 
 
-RESOLVERS = {"namsan": runs_namsan, "2024": runs_2024, "merge": runs_merge}
+def runs_wangsuk(geo_cols):
+    """왕숙 지하도로 (솔로 주행, S1~S12 조건, 다속도역 34~95km/h).
+    파일명 변형 다수(No./NO./NO3.13/NO7./S04re) → 'Road_' 뒤 마지막 숫자군=피험자,
+    '_S' 뒤 숫자=조건. '본 실험데이터' 폴더만 사용(분석데이터 폴더는 중복 사본)."""
+    DIR_W = r"<NAS_PATH set your own>"  # noqa: E501 — NAS 경로는 퍼블리셔 정규식이 한 줄 단위로 치환하므로 절대 줄바꿈 금지
+    need = set(NEED_BASE) | set(geo_cols)
+    files = sorted(glob.glob(os.path.join(DIR_W, "**", "*.csv"), recursive=True))
+    files = [f for f in files if "분석데이터" not in f]
+    pat_s = re.compile(r"_S0*(\d+)(re)?_", re.IGNORECASE)
+    rid = 0
+    for f in files:
+        name = os.path.basename(f)
+        ms = pat_s.search(name)
+        head = name.split("_S")[0]
+        digits = re.findall(r"(\d+)", head.split("Road_")[-1]) if "Road_" in head else []
+        if not ms or not digits:
+            continue                     # 태그 없는 연습주행 제외
+        subj, cond = int(digits[-1]), int(ms.group(1)) - 1
+        try:
+            df = read_csv_fallback(f, usecols=_usecols(need))
+        except Exception:
+            continue
+        yield df, subj, rid, cond
+        rid += 1
+
+
+RESOLVERS = {"namsan": runs_namsan, "2024": runs_2024, "merge": runs_merge,
+             "wangsuk": runs_wangsuk}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "smoke"], default="smoke")
+    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "wangsuk", "smoke"], default="smoke")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--feat_set", default="", help="comma-separated geo features (cross-exp intersection)")
     ap.add_argument("--use_condition", action="store_true")

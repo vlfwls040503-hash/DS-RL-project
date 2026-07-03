@@ -75,6 +75,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--per_road", type=int, default=2)
     ap.add_argument("--cvaes", default="2024,merge")
+    ap.add_argument("--ensemble", action="store_true",
+                    help="나열된 CVAE들의 v_ref 평균(과속/저속 편향 상쇄)을 단일 변형으로 평가")
     args = ap.parse_args()
 
     # ---- 챔피언 v3.2 자산 (2024) ----
@@ -115,14 +117,19 @@ def main():
                                      off=oracle["zero_shot"]["off"],
                                      tex=oracle["zero_shot"]["tex"]))
     bars = [("오라클 v_ref\n(사람속도)", oracle["zero_shot"]["auc"], "#888780")]
-    for cv_exp in args.cvaes.split(","):
-        cvae, gs, bs, z_dim = load_cvae(cv_exp)
+    cv_list = args.cvaes.split(",")
+    variants = [("ens:" + "+".join(cv_list), cv_list)] if args.ensemble \
+        else [(c, [c]) for c in cv_list]
+    for cv_exp, members in variants:
+        packs = [load_cvae(c) for c in members]
         rng = np.random.RandomState(11)
-        # 블라인드 도로: e_ref=0, v_ref=CVAE
+        # 블라인드 도로: e_ref=0, v_ref=CVAE (앙상블이면 멤버 평균)
         blind, v_pred_roads = [], []
         for r in roadsN:
             r2 = dict(r)
-            r2["v_ref"] = synth_vref(r, cvae, gs, bs, z_dim, rng)
+            vs = [synth_vref(r, cvae, gs, bs, z_dim, rng)
+                  for (cvae, gs, bs, z_dim) in packs]
+            r2["v_ref"] = np.mean(vs, axis=0).astype(np.float32)
             r2["e_ref"] = np.zeros_like(r2["v_ref"])
             v_pred_roads.append(float(np.mean(r2["v_ref"])))
             blind.append(r2)
@@ -177,15 +184,16 @@ def main():
     ax.set_title("새도로 파이프라인 (남산 블라인드): 속도 공급원별")
     ax = axes[1]
     ax.hist(v_h_roads * 3.6, bins=20, alpha=0.6, label="남산 사람", color="#185FA5")
-    for cv_exp in args.cvaes.split(","):
+    for cv_exp, _ in variants:
         vp = out[f"cvae_{cv_exp}"]["v_pred_mean"] * 3.6
         ax.axvline(vp, ls="--", lw=2, label=f"CVAE {cv_exp} 평균 {vp:.0f}")
     ax.set_xlabel("도로 평균속도 (km/h)"); ax.legend(); ax.set_title("속도 예측 vs 사람")
-    fig.tight_layout(); fig.savefig(os.path.join(FIG, "fig_newroad_pipeline.png"), dpi=120)
+    sfx = "_ens" if args.ensemble else ""
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, f"fig_newroad_pipeline{sfx}.png"), dpi=120)
     plt.close(fig)
-    json.dump(out, open(os.path.join(REP, "newroad_pipeline.json"), "w", encoding="utf-8"),
+    json.dump(out, open(os.path.join(REP, f"newroad_pipeline{sfx}.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
-    print("saved fig_newroad_pipeline.png + newroad_pipeline.json", flush=True)
+    print(f"saved fig_newroad_pipeline{sfx}.png + newroad_pipeline{sfx}.json", flush=True)
 
 
 if __name__ == "__main__":

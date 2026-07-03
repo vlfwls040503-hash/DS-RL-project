@@ -18,7 +18,7 @@ MIN_GRID_PTS = 200          # skip runs shorter than ~400 m
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "smoke"], default="smoke")
+    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "wangsuk", "smoke"], default="smoke")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
