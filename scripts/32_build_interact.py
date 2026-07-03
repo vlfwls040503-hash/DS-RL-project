@@ -17,8 +17,8 @@ from common import CACHE, GEN_DD, GEN_GEO_CANDIDATES, reindex_run, read_csv_fall
 from build_merge import FOLDERS, parse_name
 
 MIN_GRID_PTS = 200
-NEED = ["type", "time", "speedInKmPerHour", "offsetFromLaneCenter", "distanceAlongRoad"] \
-       + list(GEN_GEO_CANDIDATES)
+NEED = ["type", "time", "speedInKmPerHour", "offsetFromLaneCenter", "distanceAlongRoad",
+        "position X", "position Y"] + list(GEN_GEO_CANDIDATES)
 LEAD_DT = 0.5          # 선행차 트랙 시간 그리드 (s)
 
 
@@ -52,13 +52,27 @@ def main():
         if len(beh) < MIN_GRID_PTS:
             skipped += 1; continue
 
-        # 선행차 트랙: uv 시작(시간·위치) 기준 재영점 → 균일 0.5s 그리드
-        t0 = float(uv["time"].iloc[0])
-        s0 = float(pd.to_numeric(uv["distanceAlongRoad"], errors="coerce").iloc[0])
-        ft = pd.to_numeric(fv["time"], errors="coerce").to_numpy(float) - t0
-        fs = pd.to_numeric(fv["distanceAlongRoad"], errors="coerce").to_numpy(float) - s0
-        fvv = pd.to_numeric(fv["speedInKmPerHour"], errors="coerce").to_numpy(float) / 3.6
-        ok = np.isfinite(ft) & np.isfinite(fs) & np.isfinite(fvv) & (ft >= 0)
+        # 선행차 트랙: 합류부에서 uv/fv의 distanceAlongRoad는 기준선이 달라 직접 비교
+        # 불가 → 같은 시점의 X/Y 위치로 부호 있는 차간(진행방향 투영)을 구해
+        # uv 좌표계로 변환: s_fv(uv계) = s_uv + signed_gap.
+        num = lambda s: pd.to_numeric(s, errors="coerce")
+        uvt = pd.DataFrame(dict(time=num(uv["time"]), dar=num(uv["distanceAlongRoad"]),
+                                x=num(uv["position X"]), y=num(uv["position Y"]))).dropna()
+        fvt = pd.DataFrame(dict(time=num(fv["time"]), xf=num(fv["position X"]),
+                                yf=num(fv["position Y"]),
+                                vf=num(fv["speedInKmPerHour"]) / 3.6)).dropna()
+        mm = pd.merge(uvt, fvt, on="time").sort_values("time")
+        if len(mm) < 100:
+            skipped += 1; continue
+        t0 = float(mm["time"].iloc[0])
+        s0 = float(mm["dar"].iloc[0])
+        hx = np.gradient(mm["x"].to_numpy()); hy = np.gradient(mm["y"].to_numpy())
+        hn = np.hypot(hx, hy); hn[hn < 1e-6] = 1e-6
+        gap = ((mm["xf"] - mm["x"]) * hx / hn + (mm["yf"] - mm["y"]) * hy / hn).to_numpy()
+        ft = mm["time"].to_numpy() - t0
+        fs = mm["dar"].to_numpy() - s0 + gap
+        fvv = mm["vf"].to_numpy()
+        ok = np.isfinite(ft) & np.isfinite(fs) & np.isfinite(fvv) & (np.abs(gap) < 400)
         ft, fs, fvv = ft[ok], fs[ok], fvv[ok]
         if len(ft) < 100:
             skipped += 1; continue

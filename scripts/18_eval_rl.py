@@ -218,7 +218,7 @@ def main():
     json.dump(summ, open(os.path.join(REP, f"eval_rl_{exp}.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
 
-    L = [f"# RL 주행 에이전트 — 닫힌루프 평가 ({'SMOKE 자체검증' if exp=='smoke' else exp})\n",
+    L = [f"# RL 주행 에이전트 - 닫힌루프 평가 ({'SMOKE 자체검증' if exp=='smoke' else exp})\n",
          "> 간이 운동학 시뮬(파이썬 Gymnasium)에서 **에이전트가 직접 누적 주행**. "
          "held-out 피실험자 도로에서 PD(검증기준)·BC(모방)·RL(PPO) 비교.\n",
          "## 1. 환경 타당성 (PD가 사람 궤적을 추종하는가)\n",
@@ -226,15 +226,15 @@ def main():
          "시뮬이 기준궤적을 재현 가능함을 확인 후 비교 진행.\n",
          "## 2. 닫힌루프 비교 (test 도로)\n",
          "RL-σ = 정책 자체 행동노이즈의 온도 α를 **val 도로에서 사람 SDLP에 맞게 보정**한 확률적 평가 "
-         f"(α*={alpha_star:.2f}, **조향 채널에만 적용** — 가속은 결정론 유지로 저크 보호). "
+         f"(α*={alpha_star:.2f}, **조향 채널에만 적용** - 가속은 결정론 유지로 저크 보호). "
          "노이즈가 차량동역학(저역필터)을 통과해 *부드러운* 흔들림을 만든다.\n",
          "| 지표 | 사람 | PD | BC | RL(결정론) | RL-σ(보정) |", "|---|---|---|---|---|---|",
          f"| 이탈율 | 0 | {pd_agg['off_rate']:.2f} | {bc_agg['off_rate']:.2f} | {rl_agg['off_rate']:.2f} | **{rls_agg['off_rate']:.2f}** |",
          f"| SDLP(m) | **{hum_sdlp.mean():.3f}** | {pd_agg['sdlp']:.3f} | {bc_agg['sdlp']:.3f} | {rl_agg['sdlp']:.3f} | **{rls_agg['sdlp']:.3f}** |",
          f"| 평균속도(m/s) | {hum_v.mean():.1f} | {pd_agg['v']:.1f} | {bc_agg['v']:.1f} | {rl_agg['v']:.1f} | {rls_agg['v']:.1f} |",
-         f"| RMSE(e-e_ref) | — | {pd_agg['rmse']:.3f} | {bc_agg['rmse']:.3f} | {rl_agg['rmse']:.3f} | {rls_agg['rmse']:.3f} |",
-         f"| 저크위반율 | — | {pd_agg['jviol']:.3f} | {bc_agg['jviol']:.3f} | {rl_agg['jviol']:.3f} | {rls_agg['jviol']:.3f} |",
-         f"\n주의 — **개인추종 RMSE의 바닥**: e_ref(개인 궤적)를 관측에서 숨긴 설계에서, 특정 개인과의 "
+         f"| RMSE(e-e_ref) | - | {pd_agg['rmse']:.3f} | {bc_agg['rmse']:.3f} | {rl_agg['rmse']:.3f} | {rls_agg['rmse']:.3f} |",
+         f"| 저크위반율 | - | {pd_agg['jviol']:.3f} | {bc_agg['jviol']:.3f} | {rl_agg['jviol']:.3f} | {rls_agg['jviol']:.3f} |",
+         f"\n주의 - **개인추종 RMSE의 바닥**: e_ref(개인 궤적)를 관측에서 숨긴 설계에서, 특정 개인과의 "
          f"RMSE는 그 사람 고유 흔들림(SDLP≈{hum_sdlp.mean():.2f}m) 아래로 원리적으로 내려갈 수 없다. "
          "따라서 인간유사성의 주지표는 RMSE가 아니라 **분포일치(SDLP·속도 W1)**다.",
          "\n분포일치(Wasserstein, 완주 도로만): "

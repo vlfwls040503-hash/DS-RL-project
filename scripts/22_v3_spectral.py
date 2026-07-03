@@ -297,8 +297,8 @@ def main():
          f"| 주파장(m) | {tex['wl_h']:.0f} | 1386 | **{tex['wl_r']:.0f}** |",
          f"| SRR_0.5(/km) | {tex['srr_h']:.1f} | 16.7 | **{tex['srr_r']:.1f}** |",
          f"| SRR_2(/km) | {tex['srr2_h']:.1f} | 1.5 | {tex['srr2_r']:.1f} |",
-         f"| SDLP(m) | {tex['sdlp_h']:.3f} | — | {tex['sdlp_r']:.3f} |",
-         f"| 이탈율 | — | 0.00 | {off_rate:.2f} |",
+         f"| SDLP(m) | {tex['sdlp_h']:.3f} | - | {tex['sdlp_r']:.3f} |",
+         f"| 이탈율 | - | 0.00 | {off_rate:.2f} |",
          f"\n![v3](figs/fig_v3_{mode}_{exp}.png)\n",
          "- 스펙트럼은 train/val에서만 추정(test 오염 없음). 사람 e에는 기하반응 성분이 일부 포함되나 "
          "결정론 정책의 자체 e-변동(std 0.089)이 작아 이중계상은 소폭 — 명시적 한계.\n"]

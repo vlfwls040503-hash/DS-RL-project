@@ -239,8 +239,8 @@ def main():
 
     L = ["\n\n---\n\n## 9. 정량 검증 (정성 판단 → 통계 검정)\n",
          f"합성 주행 {len(S_sig)}회(이탈율 {off_rate:.2f}) vs 사람 test 도로 {len(test_roads)}개 "
-         f"(**5.2km 청크 {len(H_units)}단위** — 합성 롤아웃과 동일 길이로 공정 비교 + 표본 확보).\n",
-         f"### ① 기계 판별자 C2ST — \"분류기도 못 가르나\"\n",
+         f"(**5.2km 청크 {len(H_units)}단위** - 합성 롤아웃과 동일 길이로 공정 비교 + 표본 확보).\n",
+         f"### ① 기계 판별자 C2ST - \"분류기도 못 가르나\"\n",
          f"- 200m 구간 특징 8종, 로지스틱 5-fold CV: **AUC = {auc:.3f}** "
          f"(순열 null {np.mean(null_aucs):.3f}±{np.std(null_aucs):.3f}, p={p_auc:.3f}, "
          f"구간 {nmin}+{nmin})",

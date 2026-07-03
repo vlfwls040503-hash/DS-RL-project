@@ -190,7 +190,7 @@ def main():
               ensure_ascii=False, indent=2)
 
     # ================= report (within-experiment section) =================
-    L = [f"# 운전행태 생성모델(CVAE) — 검증 리포트 ({'SMOKE 자체검증' if exp=='smoke' else exp})\n",
+    L = [f"# 운전행태 생성모델(CVAE) - 검증 리포트 ({'SMOKE 자체검증' if exp=='smoke' else exp})\n",
          "> distance 재인덱싱 궤적에 대한 조건부 CVAE. prior z~N(0,I)에서 합성 주행 생성, "
          "held-out 피실험자와 *분포* 비교.\n",
          "## 1. within-experiment 검증\n",
