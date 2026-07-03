@@ -125,9 +125,15 @@ def main():
     ap.add_argument("--exp", default="2024")
     ap.add_argument("--per_road", type=int, default=10)
     ap.add_argument("--mode", choices=["spectral", "library"], default="spectral")
+    ap.add_argument("--model", default="", help="정책 zip (기본 rl_{exp}.zip)")
+    ap.add_argument("--gain", type=float, default=None, help="steer_gain (기본 RL_STEER_GAIN)")
+    ap.add_argument("--tag", default="", help="출력 접미사; 지정시 report 추가 안함")
     args = ap.parse_args()
     exp = args.exp
     mode = args.mode
+    from common import RL_STEER_GAIN
+    gain = args.gain if args.gain is not None else RL_STEER_GAIN
+    tag = args.tag
 
     roads, subject, dd = load_roads(os.path.join(CACHE, f"env_roads_{exp}.npz"))
     roads = trim_roads(roads)
@@ -136,7 +142,8 @@ def main():
     fit_roads = [r for r, m in zip(roads, tr | va) if m]
     val_roads = [r for r, m in zip(roads, va) if m]
     test_roads = [r for r, m in zip(roads, te) if m]
-    model = PPO.load(os.path.join(ART, f"rl_{exp}.zip"), device="cpu")
+    model = PPO.load(os.path.join(ART, args.model or f"rl_{exp}.zip"), device="cpu")
+    print(f"model={args.model or f'rl_{exp}.zip'} gain={gain}", flush=True)
 
     # ---- 사람 스펙트럼 (train+val에서만 — test 오염 방지) ----
     fit_chunks = []
@@ -160,7 +167,7 @@ def main():
     t_std = float(np.mean([h["e"].std() for h in hv]))
     t_wl = float(np.nanmean([p20.wavelength(h["e"]) for h in hv]))
     t_srr = float(np.mean([p20.srr(h["theta"], 0.5) for h in hv]))
-    env_v = DrivingEnv(val_roads, dd=dd, record=True)
+    env_v = DrivingEnv(val_roads, dd=dd, record=True, steer_gain=gain)
 
     def probe(sigma):
         pol = SpectralPolicy(model, fr, A, sigma, lib=lib, seed=0)
@@ -170,7 +177,7 @@ def main():
             traj, o = rollout(env_v, pol, k)
             off += int(o)
             if len(traj) > 60:
-                sg = p20.rl_signals(traj)
+                sg = p20.rl_signals(traj, gain=gain)
                 stds.append(sg["e"].std()); wls.append(p20.wavelength(sg["e"]))
                 srrs.append(p20.srr(sg["theta"], 0.5))
         return float(np.mean(stds)), float(np.nanmean(wls)), float(np.mean(srrs)), off
@@ -191,7 +198,7 @@ def main():
         by_cond.setdefault(t["cond"], []).append(t)
     rng = np.random.RandomState(0)
 
-    env = DrivingEnv(test_roads, dd=dd, record=True)
+    env = DrivingEnv(test_roads, dd=dd, record=True, steer_gain=gain)
     H_units, h_cond, S_sig, s_meta = [], [], [], []
     for k, road in enumerate(test_roads):
         hs = p20.human_signals(road, dd)
@@ -207,7 +214,7 @@ def main():
             pol.reset()
             traj, o = rollout(env, pol, k)
             if len(traj) > 60:
-                S_sig.append(p20.rl_signals(traj))
+                S_sig.append(p20.rl_signals(traj, gain=gain))
                 s_meta.append(dict(cond=int(road.get("cond", 0)), off=bool(o)))
         print(f"  road {k+1}/{len(test_roads)}", flush=True)
     off_rate = float(np.mean([m["off"] for m in s_meta]))
@@ -260,14 +267,18 @@ def main():
         ax.text(i, v, f"{v:.3f}", ha="center", va="bottom")
     ax.set_ylim(0.4, 1.0); ax.set_ylabel("C2ST AUC"); ax.legend()
     ax.set_title("판별자 AUC: v2.4 → v3")
-    fig.tight_layout(); fig.savefig(os.path.join(FIG, f"fig_v3_{mode}_{exp}.png"), dpi=120); plt.close(fig)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, f"fig_v3_{mode}_{exp}{tag}.png"), dpi=120); plt.close(fig)
 
     json.dump(dict(exp=exp, mode=mode, sigma=sigma, off_rate=off_rate,
+                   model=args.model, gain=gain,
                    c2st=dict(auc=auc, p=p_auc, n_seg=int(nmin), auc_v24=0.819),
                    texture=tex),
-              open(os.path.join(REP, f"v3_{mode}_{exp}.json"), "w", encoding="utf-8"),
+              open(os.path.join(REP, f"v3_{mode}_{exp}{tag}.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
 
+    if tag:                        # 변형 실험(예: wide gain 게이트)은 report 미첨부
+        print("tagged run - report append skipped", flush=True)
+        return
     if mode == "spectral":
         head = ["\n\n---\n\n## 10. v3 — 스펙트럼 의도합성 (파레토 돌파 시도)\n",
                 "OU 계열의 한계는 스펙트럼 '모양' → **train/val 사람 횡위치의 평균 진폭 스펙트럼을 "

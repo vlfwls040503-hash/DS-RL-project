@@ -59,7 +59,15 @@ def c2st(H_sigs, S_sigs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--per_road", type=int, default=3)
+    ap.add_argument("--model", default="rl_2024.zip")
+    ap.add_argument("--gain", type=float, default=None)
+    ap.add_argument("--sigma_json", default="v3_library_2024.json",
+                    help="σ 보정값을 읽을 json (wide는 v3_library_2024_wide.json)")
+    ap.add_argument("--tag", default="")
     args = ap.parse_args()
+    from common import RL_STEER_GAIN
+    gain = args.gain if args.gain is not None else RL_STEER_GAIN
+    tag = args.tag
 
     # ---- 소스 도메인(2024): 챔피언 자산 일체 ----
     roads24, _, dd24 = load_roads(os.path.join(CACHE, "env_roads_2024.npz"))
@@ -77,8 +85,8 @@ def main():
         x = np.asarray(e, np.float64); x = x - x.mean()
         if len(x) >= 400 and x.std() > 1e-3:
             lib.append((x / x.std()).astype(np.float64))
-    model = PPO.load(os.path.join(ART, "rl_2024.zip"), device="cpu")
-    cal = json.load(open(os.path.join(REP, "v3_library_2024.json"), encoding="utf-8"))
+    model = PPO.load(os.path.join(ART, args.model), device="cpu")
+    cal = json.load(open(os.path.join(REP, args.sigma_json), encoding="utf-8"))
     sigma24 = float(cal["sigma"])
     pool = [dict(sdlp=float(np.std(r["e_ref"])), lpm=float(np.mean(r["e_ref"])),
                  v=float(np.mean(r["v_ref"]))) for r in fit24]
@@ -102,8 +110,8 @@ def main():
           f"human SDLP={texH['sdlp']:.3f} wl={texH['wl']:.0f} SRR={texH['srr']:.1f} "
           f"v={vN*3.6:.0f}km/h | max|curv|={kmax:.4f} (조향한계 0.005)", flush=True)
 
-    def run_cohort(target_roads, sigma, seed0, tag):
-        env = DrivingEnv(target_roads, dd=ddN, record=True)
+    def run_cohort(target_roads, sigma, seed0, lbl):
+        env = DrivingEnv(target_roads, dd=ddN, record=True, steer_gain=gain)
         rng = np.random.RandomState(seed0)
         S, offs, n = [], 0, 0
         for k, road in enumerate(target_roads):
@@ -118,9 +126,9 @@ def main():
                 traj, o = rollout(env, pol, k)
                 offs += int(o); n += 1
                 if len(traj) > 60:
-                    S.append(p20.rl_signals(traj))
+                    S.append(p20.rl_signals(traj, gain=gain))
             if (k + 1) % 20 == 0:
-                print(f"  [{tag}] road {k+1}/{len(target_roads)}", flush=True)
+                print(f"  [{lbl}] road {k+1}/{len(target_roads)}", flush=True)
         return S, offs / max(n, 1)
 
     # ---- A) 제로샷: 남산 정보 0, 2024 보정 그대로, 전체 116도로 ----
@@ -133,7 +141,7 @@ def main():
 
     # ---- B) 퓨샷: 남산 val 피험자(20%)로 sigma 1노브 재보정 ----
     t_std = float(np.mean([np.std(p20.human_signals(r, ddN)["e"]) for r in val_roads]))
-    env_v = DrivingEnv(val_roads, dd=ddN, record=True)
+    env_v = DrivingEnv(val_roads, dd=ddN, record=True, steer_gain=gain)
 
     def probe(sig):
         stds = []
@@ -142,7 +150,7 @@ def main():
             pol.reset()
             traj, _ = rollout(env_v, pol, k)
             if len(traj) > 60:
-                stds.append(np.std(p20.rl_signals(traj)["e"]))
+                stds.append(np.std(p20.rl_signals(traj, gain=gain)["e"]))
         return float(np.mean(stds))
 
     sd1 = probe(t_std)
@@ -180,18 +188,18 @@ def main():
     ax.bar(x + w, fvals, w, label="퓨샷", color="#1D9E75")
     ax.set_xticks(x); ax.set_xticklabels(labels); ax.legend()
     ax.set_title("텍스처 지표 (남산 test)")
-    fig.tight_layout(); fig.savefig(os.path.join(FIG, "fig_newroad_namsan.png"), dpi=120)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, f"fig_newroad_namsan{tag}.png"), dpi=120)
     plt.close(fig)
 
-    json.dump(dict(source="2024", target="namsan",
+    json.dump(dict(source="2024", target="namsan", model=args.model, gain=gain,
                    n_roads=len(roadsN), n_subj=int(len(set(subjN))), max_curv=kmax,
                    zero_shot=dict(auc=auc_zero, off=off_zero, n_seg=n_zero, tex=texZ),
                    few_shot=dict(auc=auc_few, off=off_few, n_seg=n_few, sigma=sigmaN,
                                  tex=texF),
                    human_tex=texH, sigma24=sigma24),
-              open(os.path.join(REP, "newroad_namsan.json"), "w", encoding="utf-8"),
+              open(os.path.join(REP, f"newroad_namsan{tag}.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
-    print("saved fig_newroad_namsan.png + newroad_namsan.json", flush=True)
+    print(f"saved fig_newroad_namsan{tag}.png + newroad_namsan{tag}.json", flush=True)
 
 
 if __name__ == "__main__":

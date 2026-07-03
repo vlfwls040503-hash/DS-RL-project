@@ -43,10 +43,13 @@ class DrivingEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, roads, dd=GEN_DD, record=False, random_start=False, seed=0,
-                 gail_safety_only=False):
+                 gail_safety_only=False, steer_gain=RL_STEER_GAIN):
         super().__init__()
         assert len(roads) > 0
         self.roads, self.dd = roads, float(dd)
+        # steer_gain: 조향권한(action 1.0 = 이 곡률). 배포 도메인의 곡률 범위를 덮어야 함
+        # (남산 실패모드 1호). 기존 모델(0.005 학습)과 행동 의미가 달라지므로 모델별 고정.
+        self.gain = float(steer_gain)
         self.record, self.random_start = record, random_start
         # GAIL mode: env returns ONLY safety terms (off-road penalties); the imitation
         # reward is added by the GAIL wrapper (discriminator). Tracking terms removed.
@@ -88,7 +91,7 @@ class DrivingEnv(gym.Env):
         self.prev_a = 0.0
         self.prev_steer = 0.0
         # v4b integrator state: start matched to road curvature (no initial transient)
-        self.steer_state = float(np.clip(self.road["curv"][i0] / RL_STEER_GAIN, -1.0, 1.0))
+        self.steer_state = float(np.clip(self.road["curv"][i0] / self.gain, -1.0, 1.0))
         self.steps = 0
         self.was_offroad = False
         self.traj = []
@@ -105,7 +108,7 @@ class DrivingEnv(gym.Env):
         else:
             steer = float(np.clip(action[0], -1.0, 1.0))
         a = float(np.clip(action[1], -1.0, 1.0)) * RL_A_MAX
-        kappa_cmd = steer * RL_STEER_GAIN
+        kappa_cmd = steer * self.gain
         r = self.road
         M = len(r["curv"])
         i = min(int(self.s / self.dd), M - 1)
@@ -202,7 +205,7 @@ def pd_action(env, k_e=0.10, psi_max=0.12, k_psi=0.6, k_v=1.0, preview=4):
     kr = float(r["curv"][i])
     psi_des = float(np.clip(k_e * (e_ref - env.e), -psi_max, psi_max))
     kappa_cmd = kr + k_psi * (psi_des - env.psi)
-    steer_tgt = float(np.clip(kappa_cmd / RL_STEER_GAIN, -1.0, 1.0))
+    steer_tgt = float(np.clip(kappa_cmd / env.gain, -1.0, 1.0))
     if RL_RATE_ACTION:                 # convert target angle into a rate command
         cmd = float(np.clip((steer_tgt - env.steer_state) / (RL_SRATE_MAX * RL_DT), -1.0, 1.0))
     else:
@@ -231,7 +234,7 @@ def _smooth(x, w=9):
     return np.convolve(np.pad(x, (w // 2, w // 2), mode="edge"), k, mode="valid")[:len(x)]
 
 
-def make_expert_dataset(roads, dd=GEN_DD):
+def make_expert_dataset(roads, dd=GEN_DD, gain=RL_STEER_GAIN):
     """Derive env-native expert (obs, action) pairs from human refs.
     psi_h = de/ds; kappa_h = curv + d²e/ds²; a_h = v dv/ds."""
     X, Y = [], []
@@ -241,7 +244,7 @@ def make_expert_dataset(roads, dd=GEN_DD):
         psi_h = np.gradient(e, dd)
         kappa_h = np.asarray(r["curv"], np.float64) + np.gradient(psi_h, dd)
         a_h = v * np.gradient(v, dd)
-        steer_h = np.clip(kappa_h / RL_STEER_GAIN, -1, 1)
+        steer_h = np.clip(kappa_h / gain, -1, 1)
         acc_h = np.clip(a_h / RL_A_MAX, -1, 1)
         if RL_RATE_ACTION:
             rate_h = np.clip(np.gradient(steer_h, dd) * v / RL_SRATE_MAX, -1, 1)

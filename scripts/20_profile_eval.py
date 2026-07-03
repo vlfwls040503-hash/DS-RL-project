@@ -111,12 +111,12 @@ def human_signals(road, dd_road):
                 theta=kap * K2DEG)
 
 
-def rl_signals(traj):
+def rl_signals(traj, gain=RL_STEER_GAIN):
     s0 = traj[:, 0]
     g = np.arange(s0[0], s0[-1], GRID)
     def rs(col): return np.interp(g, s0, traj[:, col])
     e, v, psi, steer = rs(1), rs(2), rs(4), rs(5)
-    kap = steer * RL_STEER_GAIN
+    kap = steer * gain
     return dict(s=g, e=e, psi=psi, latv=v * psi, kappa=kap, lata=v * v * kap,
                 theta=kap * K2DEG)
 
