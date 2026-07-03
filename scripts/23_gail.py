@@ -82,13 +82,15 @@ class GAILWrapper(gym.Wrapper):
 
 
 class DiscCallback(BaseCallback):
-    """롤아웃마다 D를 몇 에폭 학습 (버퍼의 최근 정책 전이 vs 전문가 배치)."""
-    def __init__(self, disc, buffer, XE, YE, epochs=2, batch=512, nmax=8192):
+    """롤아웃마다 D 학습. 2차: label smoothing + 약한 D(에폭1, lr 1e-4)로 줄다리기 유지."""
+    def __init__(self, disc, buffer, XE, YE, epochs=1, batch=512, nmax=8192,
+                 d_lr=1e-4, smooth=(0.9, 0.1)):
         super().__init__()
         self.disc, self.buffer = disc, buffer
         self.expert = torch.from_numpy(np.concatenate([XE, YE], axis=1).astype("float32"))
-        self.opt = torch.optim.Adam(disc.parameters(), lr=3e-4)
+        self.opt = torch.optim.Adam(disc.parameters(), lr=d_lr)
         self.epochs, self.batch, self.nmax = epochs, batch, nmax
+        self.smooth = smooth
         self.accs = []
 
     def _on_step(self):
@@ -103,7 +105,8 @@ class DiscCallback(BaseCallback):
         idx_e = torch.randint(0, len(self.expert), (ne,))
         Xe = self.expert[idx_e]
         X = torch.cat([Xe, Xp[:ne]])
-        y = torch.cat([torch.ones(ne), torch.zeros(ne)])       # expert=1, policy=0
+        y = torch.cat([torch.full((ne,), self.smooth[0]),      # expert (label smoothing)
+                       torch.full((ne,), self.smooth[1])])     # policy
         bce = nn.BCEWithLogitsLoss()
         for _ in range(self.epochs):
             perm = torch.randperm(len(X))
@@ -136,6 +139,9 @@ def main():
     ap.add_argument("--per_road", type=int, default=10)
     ap.add_argument("--sde", action="store_true",
                     help="gSDE 매끄러운 탐사 (v1 실패원인: 백색 행동잡음을 D가 즉시 간파)")
+    ap.add_argument("--d_epochs", type=int, default=1)
+    ap.add_argument("--d_lr", type=float, default=1e-4)
+    ap.add_argument("--ckpt_every", type=int, default=1_000_000)
     args = ap.parse_args()
     exp = args.exp
 
@@ -154,7 +160,7 @@ def main():
     buffer = deque(maxlen=100_000)
     env = GAILWrapper(Monitor(DrivingEnv(train_roads, dd=dd, random_start=True, seed=0,
                                          gail_safety_only=True)), disc, buffer)
-    cb = DiscCallback(disc, buffer, XE, YE)
+    cb = DiscCallback(disc, buffer, XE, YE, epochs=args.d_epochs, d_lr=args.d_lr)
 
     if args.sde:   # v2: gSDE 매끄러운 탐사 — 정책 구조가 달라 콜드스타트
         model = PPO("MlpPolicy", env, device="cpu", seed=0, verbose=0,
@@ -168,69 +174,76 @@ def main():
                          custom_objects={"learning_rate": 1e-4, "ent_coef": 0.005})
         print(f"warm start from champion: {os.path.basename(champion)}", flush=True)
 
+    from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
+    ckpt_cb = CheckpointCallback(save_freq=args.ckpt_every, save_path=ART,
+                                 name_prefix=f"gail2_{exp}")
     t0 = time.time()
-    model.learn(total_timesteps=args.timesteps, callback=cb, progress_bar=False)
+    model.learn(total_timesteps=args.timesteps, callback=CallbackList([cb, ckpt_cb]),
+                progress_bar=False)
     print(f"trained {args.timesteps:,} in {time.time()-t0:.0f}s | D acc last10="
           f"{np.mean(cb.accs[-10:]):.2f}", flush=True)
-    model.save(os.path.join(ART, f"rl_{exp}_gail.zip"))
+    final_p = os.path.join(ART, f"gail2_{exp}_final.zip")
+    model.save(final_p)
 
-    # ---- 게이트: val (deterministic + sampled) ----
-    env_v = DrivingEnv(val_roads, dd=dd, record=True)
-
-    def probe(det):
-        stds, srrs, wls, vs, off = [], [], [], [], 0
-        for k in range(len(val_roads)):
-            traj, o = rollout(env_v, lambda ob, e: model.predict(ob, deterministic=det)[0], k)
-            off += int(o)
-            if len(traj) > 60:
-                sg = p20.rl_signals(traj)
-                stds.append(sg["e"].std()); srrs.append(p20.srr(sg["theta"], 0.5))
-                wls.append(p20.wavelength(sg["e"])); vs.append(float(traj[:, 2].mean()))
-        return (float(np.mean(stds)), float(np.mean(srrs)), float(np.nanmean(wls)),
-                float(np.mean(vs)), off)
-
-    for det, nm in [(True, "결정론"), (False, "샘플링")]:
-        sd, s5, wl, v, off = probe(det)
-        print(f"gate[{nm}]: e-std={sd:.3f} SRR0.5={s5:.1f} wl={wl:.0f} v={v:.1f}m/s off={off}/10",
-              flush=True)
-
-    # ---- 결승 C2ST: test (sampled — GAIL의 확률성 자체가 생성기) ----
-    env_t = DrivingEnv(test_roads, dd=dd, record=True)
-    H_units, S_sig, offs = [], [], 0
-    for k, road in enumerate(test_roads):
-        hs = p20.human_signals(road, dd)
-        for ch in p21.chunk_signals(hs):
+    # ---- 사람 기준 (한 번만 계산) ----
+    H_units = []
+    for road in test_roads:
+        for ch in p21.chunk_signals(p20.human_signals(road, dd)):
             H_units.append(ch)
-        for j in range(args.per_road):
-            np.random.seed(500 + k * 20 + j); torch.manual_seed(500 + k * 20 + j)
-            traj, o = rollout(env_t, lambda ob, e: model.predict(ob, deterministic=False)[0], k)
-            offs += int(o)
-            if len(traj) > 60:
-                S_sig.append(p20.rl_signals(traj))
-        print(f"  road {k+1}/{len(test_roads)}", flush=True)
-    off_rate = offs / max(len(test_roads) * args.per_road, 1)
-
-    tex = dict(sdlp_h=float(np.mean([np.std(h["e"]) for h in H_units])),
-               sdlp_r=float(np.mean([np.std(s["e"]) for s in S_sig])),
-               wl_h=float(np.nanmean([p20.wavelength(h["e"]) for h in H_units])),
-               wl_r=float(np.nanmean([p20.wavelength(s["e"]) for s in S_sig])),
-               srr_h=float(np.mean([p20.srr(h["theta"], 0.5) for h in H_units])),
-               srr_r=float(np.mean([p20.srr(s["theta"], 0.5) for s in S_sig])),
-               srr2_h=float(np.mean([p20.srr(h["theta"], 2.0) for h in H_units])),
-               srr2_r=float(np.mean([p20.srr(s["theta"], 2.0) for s in S_sig])))
-
     XH = np.vstack([p21.seg_features(h) for h in H_units])
-    XS = np.vstack([p21.seg_features(s) for s in S_sig])
-    rng2 = np.random.RandomState(2)
-    nmin = min(len(XH), len(XS))
-    X = np.vstack([XH[rng2.choice(len(XH), nmin, replace=False)],
-                   XS[rng2.choice(len(XS), nmin, replace=False)]])
-    y = np.concatenate([np.zeros(nmin), np.ones(nmin)])
-    X = (X - X.mean(0)) / (X.std(0) + 1e-9)
-    auc = cv_auc(X, y)
-    print(f"C2ST GAIL: AUC={auc:.3f} (챔피언 v3.1=0.794) n={nmin}+{nmin} off={off_rate:.2f}", flush=True)
-    print(f"texture: SDLP {tex['sdlp_h']:.3f}/{tex['sdlp_r']:.3f} wl {tex['wl_h']:.0f}/{tex['wl_r']:.0f} "
-          f"SRR {tex['srr_h']:.1f}/{tex['srr_r']:.1f} SRR2 {tex['srr2_h']:.1f}/{tex['srr2_r']:.1f}", flush=True)
+    tex_h = dict(sdlp=float(np.mean([np.std(h["e"]) for h in H_units])),
+                 wl=float(np.nanmean([p20.wavelength(h["e"]) for h in H_units])),
+                 srr=float(np.mean([p20.srr(h["theta"], 0.5) for h in H_units])),
+                 srr2=float(np.mean([p20.srr(h["theta"], 2.0) for h in H_units])))
+    env_t = DrivingEnv(test_roads, dd=dd, record=True)
+
+    def eval_model(m, per_road, seed0=500):
+        S_sig, offs = [], 0
+        for k in range(len(test_roads)):
+            for j in range(per_road):
+                np.random.seed(seed0 + k * 20 + j); torch.manual_seed(seed0 + k * 20 + j)
+                traj, o = rollout(env_t, lambda ob, e: m.predict(ob, deterministic=False)[0], k)
+                offs += int(o)
+                if len(traj) > 60:
+                    S_sig.append(p20.rl_signals(traj))
+        off_rate = offs / max(len(test_roads) * per_road, 1)
+        tex = dict(sdlp=float(np.mean([np.std(s["e"]) for s in S_sig])),
+                   wl=float(np.nanmean([p20.wavelength(s["e"]) for s in S_sig])),
+                   srr=float(np.mean([p20.srr(s["theta"], 0.5) for s in S_sig])),
+                   srr2=float(np.mean([p20.srr(s["theta"], 2.0) for s in S_sig])))
+        XS = np.vstack([p21.seg_features(s) for s in S_sig])
+        rng2 = np.random.RandomState(2)
+        nmin = min(len(XH), len(XS))
+        X = np.vstack([XH[rng2.choice(len(XH), nmin, replace=False)],
+                       XS[rng2.choice(len(XS), nmin, replace=False)]])
+        yy = np.concatenate([np.zeros(nmin), np.ones(nmin)])
+        X = (X - X.mean(0)) / (X.std(0) + 1e-9)
+        return cv_auc(X, yy), tex, off_rate, nmin
+
+    # ---- 체크포인트 토너먼트 (적대학습은 후반 붕괴 가능 → 최고 시점 선발) ----
+    import glob as _glob
+    cands = sorted(_glob.glob(os.path.join(ART, f"gail2_{exp}_*_steps.zip"))) + [final_p]
+    print(f"tournament: {len(cands)} checkpoints", flush=True)
+    results = []
+    for p in cands:
+        m = PPO.load(p, device="cpu")
+        a, tex, off, _ = eval_model(m, per_road=4)
+        print(f"  {os.path.basename(p):32s} AUC={a:.3f} SDLP={tex['sdlp']:.3f} "
+              f"wl={tex['wl']:.0f} SRR={tex['srr']:.1f} off={off:.2f}", flush=True)
+        results.append((a, p))
+    results.sort()
+    best_auc4, best_p = results[0]
+
+    # ---- 승자 전체 평가 ----
+    m = PPO.load(best_p, device="cpu")
+    auc, tex, off_rate, nmin = eval_model(m, per_road=args.per_road)
+    m.save(os.path.join(ART, f"rl_{exp}_gail.zip"))
+    print(f"WINNER {os.path.basename(best_p)}: AUC={auc:.3f} (챔피언 v3.1=0.794) "
+          f"n={nmin}+{nmin} off={off_rate:.2f}", flush=True)
+    print(f"texture h/r: SDLP {tex_h['sdlp']:.3f}/{tex['sdlp']:.3f} wl {tex_h['wl']:.0f}/{tex['wl']:.0f} "
+          f"SRR {tex_h['srr']:.1f}/{tex['srr']:.1f} SRR2 {tex_h['srr2']:.1f}/{tex['srr2']:.1f}", flush=True)
+    tex = dict(sdlp_h=tex_h["sdlp"], sdlp_r=tex["sdlp"], wl_h=tex_h["wl"], wl_r=tex["wl"],
+               srr_h=tex_h["srr"], srr_r=tex["srr"], srr2_h=tex_h["srr2"], srr2_r=tex["srr2"])
 
     # fig: AUC progression
     fig, ax = plt.subplots(figsize=(7.5, 4))
