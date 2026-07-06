@@ -36,8 +36,8 @@ plt.rcParams["axes.unicode_minus"] = False
 GAIN = 0.012
 
 
-def load_champion():
-    """챔피언 v3.2 자산 일체 (2024 학습분)."""
+def load_champion(base="rl_2024_wide.zip"):
+    """챔피언 자산 일체 (base: 조향 정책 zip — v3.2=rl_2024_wide, 후보 v3.3=rl_multi)."""
     roads24, _, dd24 = load_roads(os.path.join(CACHE, "env_roads_2024.npz"))
     roads24 = trim_roads(roads24)
     subj = np.array([r["subject"] for r in roads24], "int64")
@@ -53,7 +53,7 @@ def load_champion():
         x = np.asarray(e, np.float64); x = x - x.mean()
         if len(x) >= 400 and x.std() > 1e-3:
             lib.append((x / x.std()).astype(np.float64))
-    model = PPO.load(os.path.join(ART, "rl_2024_wide.zip"), device="cpu")
+    model = PPO.load(os.path.join(ART, base), device="cpu")
     cal = json.load(open(os.path.join(REP, "v3_library_2024_wide.json"), encoding="utf-8"))
     pool = [dict(sdlp=float(np.std(r["e_ref"])), lpm=float(np.mean(r["e_ref"])),
                  v=float(np.mean(r["v_ref"]))) for r in fit]
