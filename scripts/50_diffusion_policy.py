@@ -56,13 +56,14 @@ def make_sequences(roads, dd):
             ii = idx.astype(int); hh = hidx.astype(int)
             obs = build_obs(r, a0, v[a0], e[a0], psi[a0])
             hist = steer[hh][:, None].reshape(-1)
-            C.append(np.concatenate([obs, hist]).astype(np.float32))
+            g_ff = np.clip(np.asarray(r["curv"], np.float64)[ii] / GAIN, -1, 1)
+            C.append(np.concatenate([obs, hist, g_ff]).astype(np.float32))
             A.append(steer[ii][:, None])
     return np.asarray(C, np.float32), np.asarray(A, np.float32)
 
 
 HIST = 8                     # 히스토리 조건: 직전 실행 액션 8스텝 (표준 레시피)
-COND_DIM = OBS_DIM + HIST * 1
+COND_DIM = OBS_DIM + HIST * 1 + H
 
 
 class Denoiser(nn.Module):
@@ -175,8 +176,15 @@ class DiffusionPolicy:
     def __call__(self, obs, env):
         if self.buf is None or self.ptr >= EXEC:
             c = np.concatenate([obs, self.hist.reshape(-1)]).astype("float32")
-            cond = torch.from_numpy(((c - self.mu) / self.sd)[None]).to(DEV)
-            self.buf = self._sample(cond, guide=self._guide(env))
+            g = self._guide(env)
+            c2 = np.concatenate([c, g]).astype("float32")
+            cond = torch.from_numpy(((c2 - self.mu) / self.sd)[None]).to(DEV)
+            new = self._sample(cond, guide=g, lam=0.1)
+            if self.buf is not None:              # 경계 크로스페이드(SRR 아티팩트 완화)
+                for kk in range(4):
+                    w = (kk + 1) / 5.0
+                    new[kk] = (1 - w) * self.buf[min(self.ptr + kk, H - 1)] + w * new[kk]
+            self.buf = new
             self.ptr = 0
         st = float(np.clip(self.buf[self.ptr][0], -1, 1))
         self.ptr += 1
