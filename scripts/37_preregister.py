@@ -209,7 +209,10 @@ def main():
     p = os.path.join(REP, f"preregister_{tag}.json")
     txt = json.dumps(out, ensure_ascii=False, indent=2)
     open(p, "w", encoding="utf-8").write(txt)
-    sha = hashlib.sha256(txt.encode("utf-8")).hexdigest()
+    # 내용 해시: 타임스탬프 제외 → 재실행 재현성 감사 가능 (커밋이 시점 공증 담당)
+    core = {k: v for k, v in out.items() if k != "created"}
+    sha = hashlib.sha256(json.dumps(core, ensure_ascii=False, sort_keys=True)
+                         .encode("utf-8")).hexdigest()
     print(f"\n예측 대비: SDLP d={d_pred:+.2f} ({out['contrast']['direction']})", flush=True)
     print(f"SHA256: {sha}", flush=True)
     open(os.path.join(REP, f"preregister_{tag}.sha256"), "w").write(sha + "\n")
