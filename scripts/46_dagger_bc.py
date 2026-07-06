@@ -54,7 +54,10 @@ def main():
 
     import sys
     SMOOTH_W = int(sys.argv[1]) if len(sys.argv) > 1 else 9
-    TAG = f"_s{SMOOTH_W}" if SMOOTH_W != 9 else ""
+    INJ = len(sys.argv) > 2 and sys.argv[2] == "inj"   # 주입-인지 DAgger (46d)
+    CURVY = len(sys.argv) > 3 and sys.argv[3] == "curvy"  # 남산급 곡률 DAgger (46e)
+    TAG = (f"_s{SMOOTH_W}" if SMOOTH_W != 9 else "") + ("_inj" if INJ else "") \
+        + ("_curvy" if CURVY else "")
     print(f"expert label smooth_w={SMOOTH_W}", flush=True)
     X0, Y0 = make_expert_dataset(train_roads, dd8, gain=GAIN, smooth_w=SMOOTH_W)
     net = nn.Sequential(nn.Linear(OBS_DIM, 64), nn.ReLU(),
@@ -68,11 +71,35 @@ def main():
     bc = p44.BCAdapter(net)
 
     # ---- DAgger 반복: 학생 주행 → PD 교사 재라벨 ----
-    env_t = DrivingEnv(train_roads, dd=dd8, record=False, steer_gain=GAIN)
+    wlib = None
+    if INJ:                                            # 평가 과제(주입) 그대로 재라벨
+        wlib = []
+        r24, _, dd24 = load_roads(os.path.join(CACHE, "env_roads_2024.npz"))
+        r24t = trim_roads(r24)
+        s24 = np.array([r["subject"] for r in r24t], "int64")
+        t24, v24, _ = gen_split(s24, seed=0)
+        for r in [r for r, m in zip(r24t, t24 | v24) if m]:
+            for ch_ in p21.chunk_signals(p20.human_signals(r, dd24)):
+                x = np.asarray(ch_["e"], np.float64); x -= x.mean()
+                if len(x) >= 400 and x.std() > 1e-3:
+                    wlib.append((x / x.std()).astype(np.float64))
+        print(f"injection-aware DAgger: {len(wlib)} chunks", flush=True)
+    dag_roads = list(train_roads)
+    if CURVY:                                          # 남산(0.0106)급 곡률 커버
+        rw, _, ddw = load_roads(os.path.join(CACHE, "env_roads_wangsuk.npz"))
+        rw = trim_roads(rw)
+        add = [dict(r, subject=int(r["subject"]) + 100) for r in rw
+               if 0.008 < float(np.abs(r["curv"]).max()) <= 0.0105]
+        dag_roads += add
+        print(f"curvy DAgger roads +{len(add)}", flush=True)
+    env_t = DrivingEnv(dag_roads, dd=dd8, record=False, steer_gain=GAIN,
+                       wander_lib=wlib, wander_sigma=0.2 if INJ else 0.0)
+    if INJ:
+        env_t.wander_obs = True
     Xagg, Yagg = [X0], [Y0]
     for rnd in range(1, 3):
         Xr, Yr = [], []
-        for k in range(0, len(train_roads), 2):          # 절반 도로 샘플
+        for k in range(0, len(dag_roads), 2):            # 절반 도로 샘플
             obs, _ = env_t.reset(options={"road_idx": k})
             done = 0
             while not done:

@@ -222,6 +222,8 @@ def pd_action(env, k_e=0.10, psi_max=0.12, k_psi=0.6, k_v=1.0, preview=4):
     i = min(int(env.s / env.dd), M - 1)
     j = min(i + preview, M - 1)
     e_ref = float(r["e_ref"][j]); v_ref = float(r["v_ref"][i])
+    if getattr(env, "_wander", None) is not None:      # 주입-인지 교사 (46d)
+        e_ref += float(env._wander[j])
     kr = float(r["curv"][i])
     psi_des = float(np.clip(k_e * (e_ref - env.e), -psi_max, psi_max))
     kappa_cmd = kr + k_psi * (psi_des - env.psi)
