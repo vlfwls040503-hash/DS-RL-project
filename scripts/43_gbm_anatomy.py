@@ -32,6 +32,12 @@ FEATS = ["std_e", "mean|de|", "std_latv", "std_lata", "SRR0.5", "SRR2", "RMSde",
 
 
 def fair_exam(H_units, S_units, ret_imp=False):
+    H_units = [F for F in H_units if len(F) > 0]     # 200m 미만 유닛 제거 후
+    S_units = [F for F in S_units if len(F) > 0]     # 유닛 수 재균형 (퇴화 방지)
+    nu = min(len(H_units), len(S_units))
+    rng = np.random.RandomState(11)
+    H_units = [H_units[i] for i in rng.choice(len(H_units), nu, replace=False)]
+    S_units = [S_units[i] for i in rng.choice(len(S_units), nu, replace=False)]
     X, y, grp = [], [], []
     gid = 0
     for cls, units in [(0, H_units), (1, S_units)]:
