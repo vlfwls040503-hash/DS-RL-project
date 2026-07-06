@@ -53,11 +53,13 @@ def main():
     val_roads = [r for r, m in zip(roads8, va) if m]
 
     import sys
-    SMOOTH_W = int(sys.argv[1]) if len(sys.argv) > 1 else 9
-    INJ = len(sys.argv) > 2 and sys.argv[2] == "inj"   # 주입-인지 DAgger (46d)
-    CURVY = len(sys.argv) > 3 and sys.argv[3] == "curvy"  # 남산급 곡률 DAgger (46e)
+    argv = sys.argv[1:]
+    SMOOTH_W = int(argv[0]) if argv else 9
+    INJ = "inj" in argv                                # 주입-인지 DAgger (46d)
+    CURVY = "curvy" in argv                            # 남산급 곡률 DAgger (46e, 기각됨)
+    ROUNDS = next((int(a[1:]) for a in argv if a.startswith("r") and a[1:].isdigit()), 2)
     TAG = (f"_s{SMOOTH_W}" if SMOOTH_W != 9 else "") + ("_inj" if INJ else "") \
-        + ("_curvy" if CURVY else "")
+        + ("_curvy" if CURVY else "") + (f"_r{ROUNDS}" if ROUNDS != 2 else "")
     print(f"expert label smooth_w={SMOOTH_W}", flush=True)
     X0, Y0 = make_expert_dataset(train_roads, dd8, gain=GAIN, smooth_w=SMOOTH_W)
     net = nn.Sequential(nn.Linear(OBS_DIM, 64), nn.ReLU(),
@@ -97,7 +99,7 @@ def main():
     if INJ:
         env_t.wander_obs = True
     Xagg, Yagg = [X0], [Y0]
-    for rnd in range(1, 3):
+    for rnd in range(1, ROUNDS + 1):
         Xr, Yr = [], []
         for k in range(0, len(dag_roads), 2):            # 절반 도로 샘플
             obs, _ = env_t.reset(options={"road_idx": k})
