@@ -11,7 +11,9 @@ import numpy as np
 from common import CACHE
 from driving_env import load_roads, save_roads
 
-K_MAX = 0.005   # 여유율 원칙: 도로 max곡률 <= 권한/2.4 (K_MAX=권한이면 교정여유 0 → 정지분지)
+import sys
+K_MAX = float(sys.argv[1]) if len(sys.argv) > 1 else 0.005   # 여유율 원칙: 권한/2.4
+OUT_TAG = sys.argv[2] if len(sys.argv) > 2 else ""
 
 r24, _, dd = load_roads(os.path.join(CACHE, "env_roads_2024.npz"))
 rw, _, ddw = load_roads(os.path.join(CACHE, "env_roads_wangsuk.npz"))
@@ -24,7 +26,7 @@ for r in rw:
         kept.append(r2)
 print(f"2024 {len(r24)} + wangsuk {len(kept)}/{len(rw)} (max|curv|<={K_MAX})")
 roads = r24 + kept
-save_roads(os.path.join(CACHE, "env_roads_multi.npz"), roads, dd=dd)
+save_roads(os.path.join(CACHE, f"env_roads_multi{OUT_TAG}.npz"), roads, dd=dd)
 v = np.array([np.mean(r["v_ref"]) for r in roads]) * 3.6
 print(f"multi: {len(roads)} roads, subjects {len(set(r['subject'] for r in roads))}, "
       f"v p5-p95 {np.percentile(v,5):.0f}-{np.percentile(v,95):.0f} km/h")

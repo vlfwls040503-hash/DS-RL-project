@@ -28,9 +28,16 @@ def main():
     ap.add_argument("--gain", type=float, default=None,
                     help="조향권한(action 1.0=이 곡률). 미지정시 RL_STEER_GAIN")
     ap.add_argument("--tag", default="", help="저장 접미사 (rl_{exp}{tag}.zip)")
+    ap.add_argument("--init", default="", help="웜스타트 정책 zip (커리큘럼용)")
+    ap.add_argument("--w_e", type=float, default=None,
+                    help="추종 강성 오버라이드 (연성추종 실험: 루프서명 완화)")
     args = ap.parse_args()
     from common import RL_STEER_GAIN
     gain = args.gain if args.gain is not None else RL_STEER_GAIN
+    if args.w_e is not None:
+        import driving_env as _de
+        _de.RL_W_E = args.w_e          # env 보상에서 참조하는 모듈 전역 오버라이드
+        print(f"w_e override: {args.w_e}", flush=True)
     exp = "smoke" if args.smoke else args.exp
     if args.smoke:
         args.timesteps = min(args.timesteps, 8_000)
@@ -51,10 +58,15 @@ def main():
     # 보상 정규화는 학습에만 작용하므로 eval 스크립트들의 predict 경로는 무변경)
     env = VecNormalize(DummyVecEnv([lambda: mon]), norm_obs=False, norm_reward=True,
                        gamma=0.995)
-    model = PPO("MlpPolicy", env, device="cpu", seed=args.seed, verbose=0,
-                n_steps=2048, batch_size=256, learning_rate=3e-4, gamma=0.995,
-                gae_lambda=0.95, ent_coef=1e-3,
-                policy_kwargs=dict(net_arch=[64, 64]))
+    if args.init:
+        model = PPO.load(os.path.join(ART, args.init), env=env, device="cpu",
+                         custom_objects={"learning_rate": 1e-4})
+        print(f"warm start: {args.init}", flush=True)
+    else:
+        model = PPO("MlpPolicy", env, device="cpu", seed=args.seed, verbose=0,
+                    n_steps=2048, batch_size=256, learning_rate=3e-4, gamma=0.995,
+                    gae_lambda=0.95, ent_coef=1e-3,
+                    policy_kwargs=dict(net_arch=[64, 64]))
     t0 = time.time()
     model.learn(total_timesteps=args.timesteps, progress_bar=False)
     dt = time.time() - t0
