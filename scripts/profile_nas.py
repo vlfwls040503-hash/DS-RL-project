@@ -189,7 +189,7 @@ def main():
         if "type_values" in r:
             L.append(f"- type 값: {r['type_values']}")
         if r.get("missing_key"):
-            L.append(f"- ⚠️ 누락(핵심): {r['missing_key']}")
+            L.append(f"- [!]️ 누락(핵심): {r['missing_key']}")
         L.append("")
     open(r"D:\driving_bc\reports\nas_inventory.md", "w", encoding="utf-8").write("\n".join(L))
     print("\nwrote reports/nas_inventory.{md,json}")
