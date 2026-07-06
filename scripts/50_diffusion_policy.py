@@ -139,15 +139,19 @@ class DiffusionPolicy:
         self.hist = np.zeros((HIST, 1), np.float32)
 
     @torch.no_grad()
-    def _sample(self, cond):
+    def _sample(self, cond, guide=None, lam=0.35):
         x = torch.randn(1, H, 1, generator=self.g, device=DEV)
         ts = np.linspace(T_DIFF - 1, 0, DDIM_STEPS).astype(int)
+        gt = None if guide is None else torch.from_numpy(
+            guide.astype("float32")).view(1, H, 1).to(DEV)
         for i, t in enumerate(ts):
             tt = torch.full((1,), int(t), device=DEV, dtype=torch.long)
             eps = self.net(x, tt, cond)
             a_t = self.ab[t]
             x0 = (x - (1 - a_t).sqrt() * eps) / a_t.sqrt()
             x0 = x0.clamp(-1, 1)
+            if gt is not None:                 # 안정성 가이던스: 도로추종 참조로 혼합
+                x0 = (1 - lam) * x0 + lam * gt
             if i < len(ts) - 1:
                 a_p = self.ab[ts[i + 1]]
                 x = a_p.sqrt() * x0 + (1 - a_p).sqrt() * eps
@@ -155,11 +159,24 @@ class DiffusionPolicy:
                 x = x0
         return x[0].cpu().numpy()
 
+    def _guide(self, env):
+        """참조 청크: 현재 PD 조향(초항) + 전방 곡률 피드포워드."""
+        from driving_env import pd_action
+        r = env.road
+        M = len(r["curv"])
+        st0 = float(pd_action(env)[0])
+        g = np.empty(H, np.float32)
+        g[0] = st0
+        for k in range(1, H):
+            j = min(int((env.s + env.v * 0.05 * k) / env.dd), M - 1)
+            g[k] = np.clip(r["curv"][j] / GAIN, -1, 1)
+        return g
+
     def __call__(self, obs, env):
         if self.buf is None or self.ptr >= EXEC:
             c = np.concatenate([obs, self.hist.reshape(-1)]).astype("float32")
             cond = torch.from_numpy(((c - self.mu) / self.sd)[None]).to(DEV)
-            self.buf = self._sample(cond)
+            self.buf = self._sample(cond, guide=self._guide(env))
             self.ptr = 0
         st = float(np.clip(self.buf[self.ptr][0], -1, 1))
         self.ptr += 1

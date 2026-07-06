@@ -58,8 +58,10 @@ def main():
     INJ = "inj" in argv                                # 주입-인지 DAgger (46d)
     CURVY = "curvy" in argv                            # 남산급 곡률 DAgger (46e, 기각됨)
     ROUNDS = next((int(a[1:]) for a in argv if a.startswith("r") and a[1:].isdigit()), 2)
+    DART = "dart" in argv                              # 수집시 행동노이즈(커버리지 확장)
     TAG = (f"_s{SMOOTH_W}" if SMOOTH_W != 9 else "") + ("_inj" if INJ else "") \
-        + ("_curvy" if CURVY else "") + (f"_r{ROUNDS}" if ROUNDS != 2 else "")
+        + ("_curvy" if CURVY else "") + (f"_r{ROUNDS}" if ROUNDS != 2 else "") \
+        + ("_dart" if DART else "")
     print(f"expert label smooth_w={SMOOTH_W}", flush=True)
     X0, Y0 = make_expert_dataset(train_roads, dd8, gain=GAIN, smooth_w=SMOOTH_W)
     net = nn.Sequential(nn.Linear(OBS_DIM, 64), nn.ReLU(),
@@ -107,6 +109,8 @@ def main():
             while not done:
                 a_t = pd_action(env_t)                   # 특권 교사 (사람 e_ref 추종)
                 a_s = bc.predict(obs)[0]
+                if DART:
+                    a_s = a_s + np.random.randn(2).astype(np.float32) * [0.08, 0.05]
                 Xr.append(obs); Yr.append(a_t)
                 obs, _, term, trunc, _ = env_t.step(a_s)
                 done = term or trunc
