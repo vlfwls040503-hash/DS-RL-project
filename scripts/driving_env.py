@@ -254,12 +254,13 @@ def _smooth(x, w=9):
     return np.convolve(np.pad(x, (w // 2, w // 2), mode="edge"), k, mode="valid")[:len(x)]
 
 
-def make_expert_dataset(roads, dd=GEN_DD, gain=RL_STEER_GAIN):
+def make_expert_dataset(roads, dd=GEN_DD, gain=RL_STEER_GAIN, smooth_w=9):
     """Derive env-native expert (obs, action) pairs from human refs.
-    psi_h = de/ds; kappa_h = curv + d²e/ds²; a_h = v dv/ds."""
+    psi_h = de/ds; kappa_h = curv + d²e/ds²; a_h = v dv/ds.
+    smooth_w: 라벨 평활 폭 — 9(기본)는 질감을 깎음; 3이면 질감 보존 교사(46b)."""
     X, Y = [], []
     for r in roads:
-        e = _smooth(np.asarray(r["e_ref"], np.float64))
+        e = _smooth(np.asarray(r["e_ref"], np.float64), w=max(1, smooth_w))
         v = _smooth(np.asarray(r["v_ref"], np.float64))
         psi_h = np.gradient(e, dd)
         kappa_h = np.asarray(r["curv"], np.float64) + np.gradient(psi_h, dd)
