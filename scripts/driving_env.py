@@ -53,6 +53,7 @@ class DrivingEnv(gym.Env):
         # (남산 실패모드 1호). 기존 모델(0.005 학습)과 행동 의미가 달라지므로 모델별 고정.
         self.gain = float(steer_gain)
         self.wander_lib, self.wander_sigma = wander_lib, float(wander_sigma)
+        self.wander_obs = False        # True: 방황을 관측 e-채널에도 주입(평가 메커니즘 재현)
         self._wander = None
         self.record, self.random_start = record, random_start
         # GAIL mode: env returns ONLY safety terms (off-road penalties); the imitation
@@ -163,7 +164,10 @@ class DrivingEnv(gym.Env):
         if self.record:   # (s, e, v, a, psi, steer) — psi/steer feed the multi-signal profile eval
             self.traj.append((self.s, self.e, self.v, a, self.psi, steer))
         i2 = min(int(self.s / self.dd), M - 1)
-        obs = build_obs(r, i2, self.v, self.e, self.psi, self.vref_scale,
+        e_obs = self.e
+        if self._wander is not None and self.wander_obs:
+            e_obs = self.e - float(self._wander[i2])
+        obs = build_obs(r, i2, self.v, e_obs, self.psi, self.vref_scale,
                         self.steer_state if RL_RATE_ACTION else steer)
         return obs, float(rew), terminated, truncated, dict(e_ref=e_ref, v_ref=v_ref, offroad=offroad)
 

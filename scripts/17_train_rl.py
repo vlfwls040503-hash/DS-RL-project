@@ -69,9 +69,12 @@ def main():
                 if len(x) >= 400 and x.std() > 1e-3:
                     wlib.append((x / x.std()).astype(np.float64))
         print(f"wander lib: {len(wlib)} chunks, sigma={args.wander_sigma}", flush=True)
-    mon = Monitor(DrivingEnv(train_roads, dd=dd, random_start=True, seed=args.seed,
-                             steer_gain=gain, wander_lib=wlib,
-                             wander_sigma=args.wander_sigma))
+    _env0 = DrivingEnv(train_roads, dd=dd, random_start=True, seed=args.seed,
+                       steer_gain=gain, wander_lib=wlib,
+                       wander_sigma=args.wander_sigma)
+    if args.wander_sigma > 0:
+        _env0.wander_obs = True        # 5b: 평가 주입 메커니즘을 훈련에서 재현
+    mon = Monitor(_env0)
     print(f"steer_gain={gain}", flush=True)
     # v4c: reward/return normalization (norm_obs=False — obs는 이미 수동 정규화;
     # 보상 정규화는 학습에만 작용하므로 eval 스크립트들의 predict 경로는 무변경)
