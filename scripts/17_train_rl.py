@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--init", default="", help="웜스타트 정책 zip (커리큘럼용)")
     ap.add_argument("--w_e", type=float, default=None,
                     help="추종 강성 오버라이드 (연성추종 실험: 루프서명 완화)")
+    ap.add_argument("--wander_sigma", type=float, default=0.0,
+                    help=">0이면 훈련 e_ref에 사람 청크 방황 합성 (이동참조 네이티브 학습)")
     args = ap.parse_args()
     from common import RL_STEER_GAIN
     gain = args.gain if args.gain is not None else RL_STEER_GAIN
@@ -51,8 +53,25 @@ def main():
     print(f"[{exp}] roads train={len(train_roads)} val={len(val_roads)} test={int(te.sum())} "
           f"(subjects total {len(set(subject.tolist()))})", flush=True)
 
+    wlib = None
+    if args.wander_sigma > 0:
+        import importlib
+        p20 = importlib.import_module("20_profile_eval")
+        p21 = importlib.import_module("21_validation")
+        r24, _, dd24 = load_roads(os.path.join(CACHE, "env_roads_2024.npz"))
+        r24 = trim_roads(r24)
+        s24 = np.array([r["subject"] for r in r24], "int64")
+        t24, v24, _ = gen_split(s24, seed=0)
+        wlib = []
+        for r in [r for r, m in zip(r24, t24 | v24) if m]:
+            for ch_ in p21.chunk_signals(p20.human_signals(r, dd24)):
+                x = np.asarray(ch_["e"], np.float64); x -= x.mean()
+                if len(x) >= 400 and x.std() > 1e-3:
+                    wlib.append((x / x.std()).astype(np.float64))
+        print(f"wander lib: {len(wlib)} chunks, sigma={args.wander_sigma}", flush=True)
     mon = Monitor(DrivingEnv(train_roads, dd=dd, random_start=True, seed=args.seed,
-                             steer_gain=gain))
+                             steer_gain=gain, wander_lib=wlib,
+                             wander_sigma=args.wander_sigma))
     print(f"steer_gain={gain}", flush=True)
     # v4c: reward/return normalization (norm_obs=False — obs는 이미 수동 정규화;
     # 보상 정규화는 학습에만 작용하므로 eval 스크립트들의 predict 경로는 무변경)

@@ -43,13 +43,17 @@ class DrivingEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, roads, dd=GEN_DD, record=False, random_start=False, seed=0,
-                 gail_safety_only=False, steer_gain=RL_STEER_GAIN):
+                 gail_safety_only=False, steer_gain=RL_STEER_GAIN,
+                 wander_lib=None, wander_sigma=0.0):
+        # wander_lib: 사람 잔차 청크 목록 — 훈련 e_ref에 방황 합성(이동 참조 네이티브 학습)
         super().__init__()
         assert len(roads) > 0
         self.roads, self.dd = roads, float(dd)
         # steer_gain: 조향권한(action 1.0 = 이 곡률). 배포 도메인의 곡률 범위를 덮어야 함
         # (남산 실패모드 1호). 기존 모델(0.005 학습)과 행동 의미가 달라지므로 모델별 고정.
         self.gain = float(steer_gain)
+        self.wander_lib, self.wander_sigma = wander_lib, float(wander_sigma)
+        self._wander = None
         self.record, self.random_start = record, random_start
         # GAIL mode: env returns ONLY safety terms (off-road penalties); the imitation
         # reward is added by the GAIL wrapper (discriminator). Tracking terms removed.
@@ -95,6 +99,16 @@ class DrivingEnv(gym.Env):
         self.steps = 0
         self.was_offroad = False
         self.traj = []
+        if self.wander_lib is not None and self.wander_sigma > 0:
+            w = []
+            while sum(len(c) for c in w) < M // 5 + 40:   # 10m청크 → 2m그리드로 5배
+                c = self.wander_lib[self._rng.randint(len(self.wander_lib))]
+                w.append(-c[::-1] if self._rng.rand() < 0.5 else c)
+            w10 = np.concatenate(w)
+            xi = np.arange(M) / 5.0                        # 10m 그리드 → dd=2m 보간
+            self._wander = self.wander_sigma * np.interp(xi, np.arange(len(w10)), w10)
+        else:
+            self._wander = None
         return build_obs(self.road, i0, self.v, self.e, self.psi, self.vref_scale,
                          self.steer_state), {}
 
@@ -122,6 +136,8 @@ class DrivingEnv(gym.Env):
         self.steps += 1
 
         e_ref = float(r["e_ref"][i]); v_ref = float(r["v_ref"][i]) * self.vref_scale
+        if self._wander is not None:
+            e_ref += float(self._wander[i])
         jerk = (a - self.prev_a) / RL_DT
         if self.gail_safety_only:
             rew = 0.0                      # imitation reward comes from the GAIL wrapper
