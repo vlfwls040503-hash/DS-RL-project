@@ -116,7 +116,7 @@ def main():
     tgt_de = float(np.mean([np.mean(np.abs(np.diff(h["e"]))) for h in hv]))
     best = None
     for beta in [1.0, 2.0]:
-        for tau in [0.15, 0.3, 0.6]:
+        for tau in [0.6, 1.0, 1.5]:
             s0 = 0.2
             for it in range(2):
                 sds, des = [], []
