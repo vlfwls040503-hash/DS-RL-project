@@ -98,6 +98,12 @@ def train():
     subj = np.array([r["subject"] for r in roads], "int64")
     tr, va, te = gen_split(subj, seed=0)
     train_roads = [r for r, m in zip(roads, tr | va) if m]   # 전체 train+val
+    ice_p = os.path.join(CACHE, "env_roads_icing.npz")
+    if os.path.exists(ice_p):                                # 잔차 도메인 다양화(결빙)
+        ice, _, ddi = load_roads(ice_p)
+        ice = trim_roads(ice)
+        train_roads += ice
+        print(f"+icing roads {len(ice)} (잔차 조건 다양화: 남산급 저속)", flush=True)
     C, A = make_sequences(train_roads, dd)
     print(f"sequences: {len(C):,} | resid std={A.std():.3f}", flush=True)
     mu_c, sd_c = C.mean(0), C.std(0) + 1e-6
@@ -252,7 +258,7 @@ def evaluate():
     _, va24, te24 = gen_split(s24, seed=0)
     val24 = [dict(r, e_ref=np.zeros_like(r["v_ref"])) for r, m in zip(r24, va24) if m]
     env24 = DrivingEnv(val24, dd=dd24, record=True, steer_gain=GAIN)
-    off, prog = gate(env24, val24, tau=1.0)
+    off, prog = gate(env24, val24, tau=0.3)   # 보정 전 게이트는 보수 τ
     print(f"[게이트 인도메인] off={off:.2f} 진행={prog:.2f}", flush=True)
     if off > 0.3 or prog < 0.8:
         print("GATE FAIL (in-domain)", flush=True)

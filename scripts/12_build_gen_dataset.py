@@ -92,13 +92,41 @@ def runs_wangsuk(geo_cols):
         rid += 1
 
 
+def runs_icing(geo_cols):
+    """결빙 2022 (감응형결빙주의표지판, 47~49km/h — 남산급 저속 질감 원산지).
+    파일명에 실명 포함 → 이름은 id 매핑만, 어떤 산출물에도 미기록."""
+    DIR_I = r"<NAS_PATH set your own>"  # noqa: E501 — NAS 경로 줄바꿈 금지
+    need = set(NEED_BASE) | set(geo_cols)
+    name_map = {}
+    rid = 0
+    for sc in sorted(os.listdir(DIR_I)):
+        sp = os.path.join(DIR_I, sc)
+        if not os.path.isdir(sp):
+            continue
+        cond = rid_c = int(re.sub(r"\D", "", sc) or 0) - 1
+        for f in sorted(glob.glob(os.path.join(sp, "*.csv"))):
+            m = re.search(r"_\d+_([가-힣]{2,4})_", os.path.basename(f))
+            key = m.group(1) if m else os.path.basename(f)[:20]
+            name_map.setdefault(key, len(name_map))
+            try:
+                df = read_csv_fallback(f, usecols=_usecols(need))
+            except Exception:
+                continue
+            if "distanceAlongRoad" not in df.columns:
+                continue
+            if "time" not in df.columns:                 # distance-based log 호환
+                df["time"] = np.arange(len(df), dtype=float)
+            yield df, name_map[key], rid, max(cond, 0)
+            rid += 1
+
+
 RESOLVERS = {"namsan": runs_namsan, "2024": runs_2024, "merge": runs_merge,
-             "wangsuk": runs_wangsuk}
+             "wangsuk": runs_wangsuk, "icing": runs_icing}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "wangsuk", "smoke"], default="smoke")
+    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "wangsuk", "icing", "smoke"], default="smoke")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--feat_set", default="", help="comma-separated geo features (cross-exp intersection)")
     ap.add_argument("--use_condition", action="store_true")
