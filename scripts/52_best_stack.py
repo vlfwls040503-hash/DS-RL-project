@@ -29,9 +29,18 @@ IDX_E = p20.IDX_E
 
 class BestStackPolicy(p51.ResidualDiffusionPolicy):
     """운반자=DAgger-BC(주입 obs), 배회=청크(부모), 질감=디퓨전 잔차 스트림(부모)."""
-    def __init__(self, bc, **kw):
+    def __init__(self, bc, beta=1.0, **kw):
         super().__init__(**kw)
         self.bc = bc
+        self.beta = float(beta)
+
+    def reset(self):
+        super().reset()
+        if self.w is not None and self.beta != 1.0:
+            import importlib as _il
+            _ma = _il.import_module("41_midband").ma
+            w_low = _ma(self.w, 31)
+            self.w = w_low + self.beta * _ma(self.w - w_low, 5)
 
     def __call__(self, obs, env):
         # 잔차 스트림 갱신 (부모 로직 재사용을 위해 가이드 조건만 구성)
@@ -89,12 +98,15 @@ def main():
         tgt_sd = float(np.mean([np.std(h["e"]) for h in hv]))
         tgt_de = float(np.mean([np.mean(np.abs(np.diff(h["e"]))) for h in hv]))
         best = None
-        for tau in [0.0, 0.15, 0.3]:
+        betas = [1.0, 2.0] if exp == "namsan" else [1.0]
+        for beta in betas:
+          for tau in [0.0, 0.15, 0.3]:
             s0 = 0.2
             for it in range(2):
                 sds, des = [], []
                 for k in range(len(val_r)):
-                    pol = BestStackPolicy(bc, tau=tau, sigma=s0, lib=fitlib, seed=90 + k)
+                    pol = BestStackPolicy(bc, beta=beta, tau=tau, sigma=s0, lib=fitlib,
+                                          seed=90 + k)
                     pol.reset()
                     traj, _ = rollout(env_v, pol, k)
                     if len(traj) > 60:
@@ -106,17 +118,17 @@ def main():
                 + 0.5 * abs(np.mean(sds) - tgt_sd) / tgt_sd
             print(f"  [{exp}] tau={tau} σ={s0:.3f}: |de|={np.mean(des):.4f}({tgt_de:.4f}) "
                   f"SDLP={np.mean(sds):.3f}({tgt_sd:.3f}) gap={gap:.3f}", flush=True)
-            if best is None or gap < best[2]:
-                best = (tau, s0, gap)
-        tau_d, sig_d, _ = best
+            if best is None or gap < best[3]:
+                best = (tau, s0, beta, gap)
+        tau_d, sig_d, beta_d, _ = best
         exam_roads = roads if exp == "namsan" else [r for r, m in zip(roads, tex) if m]
         blind = [dict(r, e_ref=np.zeros_like(r["v_ref"])) for r in exam_roads]
         env = DrivingEnv(blind, dd=dd, record=True, steer_gain=GAIN)
         T, offc = [], 0
         for k in range(len(blind)):
             for j in range(per_road):
-                pol = BestStackPolicy(bc, tau=tau_d, sigma=sig_d, lib=fitlib,
-                                      seed=7000 + k * 20 + j)
+                pol = BestStackPolicy(bc, beta=beta_d, tau=tau_d, sigma=sig_d,
+                                      lib=fitlib, seed=7000 + k * 20 + j)
                 pol.reset()
                 traj, off = rollout(env, pol, k)
                 offc += int(off)
@@ -132,7 +144,7 @@ def main():
             Hh = [p21.seg_features(p20.human_signals(r, dd)) for r in exam_roads]
         auc, imp = p43.fair_exam(Hh, S, ret_imp=True)
         top = np.argsort(-imp)[:3]
-        out[exp] = dict(auc=float(auc), tau=tau_d, sigma=sig_d,
+        out[exp] = dict(auc=float(auc), tau=tau_d, sigma=sig_d, beta=beta_d,
                         off=offc / max(len(blind) * per_road, 1))
         print(f"[{exp}] 총결합 GBM AUC={auc:.3f} (현직 {'0.817' if exp=='namsan' else '0.770'}) "
               f"off={out[exp]['off']:.2f} | 상위: "
