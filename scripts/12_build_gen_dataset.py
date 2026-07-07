@@ -120,13 +120,39 @@ def runs_icing(geo_cols):
             rid += 1
 
 
+def runs_underpass21(geo_cols):
+    """지하유출입 2차년도(2021) 시뮬레이션 수행 로그 (저속 지하도로 — 잔차 원산지 2호)."""
+    DIR_U = r"<NAS_PATH set your own>"  # noqa: E501 — NAS 경로 줄바꿈 금지
+    need = set(NEED_BASE) | set(geo_cols)
+    rid = 0
+    for sc in sorted(os.listdir(DIR_U)):
+        sp = os.path.join(DIR_U, sc)
+        if not os.path.isdir(sp):
+            continue
+        cond = max(int(re.sub(r"\D", "", sc) or 1) - 1, 0)
+        for f in sorted(glob.glob(os.path.join(sp, "*.csv"))):
+            m = re.search(r"Road_\s*(\d+)", os.path.basename(f))
+            subj = int(m.group(1)) if m else rid
+            try:
+                df = read_csv_fallback(f, usecols=_usecols(need))
+            except Exception:
+                continue
+            if "distanceAlongRoad" not in df.columns:
+                continue
+            if "time" not in df.columns:
+                df["time"] = np.arange(len(df), dtype=float)
+            yield df, subj, rid, cond
+            rid += 1
+
+
 RESOLVERS = {"namsan": runs_namsan, "2024": runs_2024, "merge": runs_merge,
-             "wangsuk": runs_wangsuk, "icing": runs_icing}
+             "wangsuk": runs_wangsuk, "icing": runs_icing,
+             "underpass21": runs_underpass21}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "wangsuk", "icing", "smoke"], default="smoke")
+    ap.add_argument("--exp", choices=["namsan", "2024", "merge", "wangsuk", "icing", "underpass21", "smoke"], default="smoke")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--feat_set", default="", help="comma-separated geo features (cross-exp intersection)")
     ap.add_argument("--use_condition", action="store_true")

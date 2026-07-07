@@ -98,12 +98,13 @@ def train():
     subj = np.array([r["subject"] for r in roads], "int64")
     tr, va, te = gen_split(subj, seed=0)
     train_roads = [r for r, m in zip(roads, tr | va) if m]   # 전체 train+val
-    ice_p = os.path.join(CACHE, "env_roads_icing.npz")
-    if os.path.exists(ice_p):                                # 잔차 도메인 다양화(결빙)
-        ice, _, ddi = load_roads(ice_p)
-        ice = trim_roads(ice)
-        train_roads += ice
-        print(f"+icing roads {len(ice)} (잔차 조건 다양화: 남산급 저속)", flush=True)
+    for extra in ["icing", "underpass21"]:                   # 잔차 도메인 다양화
+        p_ = os.path.join(CACHE, f"env_roads_{extra}.npz")
+        if os.path.exists(p_):
+            ex, _, _dde = load_roads(p_)
+            ex = trim_roads(ex)
+            train_roads += ex
+            print(f"+{extra} roads {len(ex)}", flush=True)
     C, A = make_sequences(train_roads, dd)
     print(f"sequences: {len(C):,} | resid std={A.std():.3f}", flush=True)
     mu_c, sd_c = C.mean(0), C.std(0) + 1e-6
