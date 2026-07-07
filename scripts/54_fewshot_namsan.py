@@ -115,10 +115,10 @@ def main():
     tgt_sd = float(np.mean([np.std(h["e"]) for h in hv]))
     tgt_de = float(np.mean([np.mean(np.abs(np.diff(h["e"]))) for h in hv]))
     best = None
-    for beta in [1.0, 2.0]:
-        for tau in [0.6, 1.0, 1.5]:
+    for beta in [3.0]:
+        for tau in [0.8]:
             s0 = 0.2
-            for it in range(2):
+            for it in range(3):
                 sds, des = [], []
                 for k in range(len(va_r)):
                     pol = FewshotPolicy(bc, beta=beta, tau=tau, sigma=s0, lib=libN,
@@ -173,9 +173,37 @@ def main():
                 fitlib.append((x / x.std()).astype(np.float64))
     base_auc = exam(lambda sd_: p52.BestStackPolicy(bc, beta=2.0, tau=0.0, sigma=0.142,
                                                     lib=fitlib, seed=sd_), "기준선(현직)")
-    fs_auc = exam(lambda sd_: FewshotPolicy(bc, beta=beta_b, tau=tau_b, sigma=sig_b,
-                                            lib=libN, seed=sd_), "퓨샷")
+    fs_aucs = []
+    for rep in range(3):                                  # 시드 복제 검증
+        fs_aucs.append(exam(lambda sd_: FewshotPolicy(bc, beta=beta_b, tau=tau_b,
+                                                      sigma=sig_b, lib=libN,
+                                                      seed=sd_ + rep * 100000),
+                            f"퓨샷 rep{rep}"))
+    fs_auc = float(np.mean(fs_aucs))
+    print(f"[검증] 퓨샷 3복제: {[round(a,3) for a in fs_aucs]} 평균 {fs_auc:.3f}", flush=True)
+    # CNN 진실계 (200m 원시창, GroupKFold)
+    p27 = importlib.import_module("27_raw_cnn_eval")
+    T, S_sigs = [], []
+    for k in range(len(blind)):
+        for j in range(2):
+            pol = FewshotPolicy(bc, beta=beta_b, tau=tau_b, sigma=sig_b, lib=libN,
+                                seed=5000 + k * 20 + j)
+            pol.reset()
+            traj, _ = rollout(env, pol, k)
+            if len(traj) > 60:
+                S_sigs.append(p39.symmetric_signals(traj, te_r[k], ddN, GAIN))
+    H_sigs = [p20.human_signals(r, ddN) for r in te_r]
+    Xs, ys, gs = [], [], []
+    gid = 0
+    for cls, units in [(0, H_sigs), (1, S_sigs)]:
+        for u in units:
+            for win in p27.unit_windows(u, 20, 10):
+                Xs.append(win); ys.append(cls); gs.append(gid)
+            gid += 1
+    cnn_auc = p27.cnn_group_cv(np.stack(Xs), np.array(ys), np.array(gs))
+    print(f"[검증] CNN 진실계(200m): {cnn_auc:.3f}", flush=True)
     json.dump(dict(baseline_te=base_auc, fewshot_te=fs_auc,
+                   fewshot_reps=fs_aucs, cnn_tier=float(cnn_auc),
                    knobs=dict(beta=beta_b, tau=tau_b, sigma=sig_b),
                    n_pilot=len(tr_r), n_test=len(te_r)),
               open(os.path.join(REP, "fewshot_namsan.json"), "w", encoding="utf-8"),
